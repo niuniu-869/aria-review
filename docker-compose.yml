@@ -1,0 +1,131 @@
+# BiblioCN 三服务本地编排 + 一键可部署 demo
+#
+# 快速零 key demo: docker compose run --rm --build demo  (fresh 容器也能产出可验证 RunLog)
+# 起工作台:        docker compose up -d --build         (web + agent + postgres; R 分析按需开启)
+# 含 R 分析全栈:   docker compose --profile analysis up -d --build
+# 独立校验 RunLog: docker compose run --rm agent python scripts/verify_runlog.py \
+#                    /data/corpora/demo_runlog.json --corpus-hashes /data/corpora/demo_corpus_hashes.json
+#
+# 端口: agent 8000 / web 8080 / r-analysis 8001(analysis profile 内部) / postgres 127.0.0.1:${POSTGRES_PORT:-55432}
+# 详见 README.md
+name: bibliocn
+
+services:
+  r-analysis:
+    build: ./services/r-analysis
+    profiles: ["analysis"]
+    environment:
+      PORT: "8001"
+      BIBLIOCN_CORPORA_DIR: /data/corpora
+    volumes:
+      - corpora:/data/corpora
+    expose:
+      - "8001"
+
+  agent:
+    build: ./services/agent
+    environment:
+      PORT: "8000"
+      R_ANALYSIS_URL: http://r-analysis:8001
+      CORS_ORIGINS: http://localhost:8080
+      # Phase 1 持久化: 连容器内 postgres (asyncpg 驱动)
+      DATABASE_URL: postgresql+asyncpg://bibliocn:bibliocn@postgres:5432/bibliocn
+      # 与 demo 共享同一 corpora 卷 (缓存 markdown、demo RunLog/指标落点)
+      BIBLIOCN_CORPORA_DIR: /data/corpora
+      # 可选外部 key: 不设则为空, 离线友好 (无 MinerU/LLM 也能跑 demo)
+      OCR_AUTHORIZATION_TOKEN: ${OCR_AUTHORIZATION_TOKEN:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      IMAGE_API_KEY: ${IMAGE_API_KEY:-}
+      IMAGE_BASE_URL: ${IMAGE_BASE_URL:-https://api.openai.com/v1}
+      IMAGE_MODEL: ${IMAGE_MODEL:-gpt-image-1}
+      IMAGE_SIZE: ${IMAGE_SIZE:-1024x1024}
+      SCIVERSE_BASE_URL: ${SCIVERSE_BASE_URL:-https://api.sciverse.space}
+      SCIVERSE_API_TOKEN: ${SCIVERSE_API_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - corpora:/data/corpora
+    ports:
+      - "8000:8000"
+    # 启动先 alembic upgrade head (保证迁移已应用), 再起 uvicorn。
+    # $$PORT 双美元转义: 阻止 compose 在解析期替换, 改由容器内 bash 展开 env PORT(=8000)。
+    command:
+      - bash
+      - -lc
+      - "python scripts/wait_for_db.py --timeout 60 && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $$PORT"
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        VITE_API_BASE: /api
+    depends_on:
+      agent:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+
+  # Phase 1 持久化: 用户/项目/对话/任务/agent run。P3-5 起默认启动 (agent 依赖之)。
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bibliocn
+      POSTGRES_PASSWORD: bibliocn
+      POSTGRES_DB: bibliocn
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./services/agent/migrations/initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bibliocn -d bibliocn"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # 一次性 demo: 容器内复现一份可信综述 + 校验 RunLog + 产出指标。
+  # profiles: ["demo"] → 默认不随 up 启动; 用 `docker compose run --rm demo` 触发。
+  # 复用 agent 镜像 (build: ./services/agent), 挂同一 corpora 卷与 DATABASE_URL,
+  # 走 --offline-fixtures builtin 离线自包含路径: 无 MinerU/LLM key、fresh 容器也能端到端跑通。
+  demo:
+    build: ./services/agent
+    profiles: ["demo"]
+    environment:
+      R_ANALYSIS_URL: http://r-analysis:8001
+      DATABASE_URL: postgresql+asyncpg://bibliocn:bibliocn@postgres:5432/bibliocn
+      BIBLIOCN_CORPORA_DIR: /data/corpora
+      OCR_AUTHORIZATION_TOKEN: ${OCR_AUTHORIZATION_TOKEN:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      IMAGE_API_KEY: ${IMAGE_API_KEY:-}
+      IMAGE_BASE_URL: ${IMAGE_BASE_URL:-https://api.openai.com/v1}
+      IMAGE_MODEL: ${IMAGE_MODEL:-gpt-image-1}
+      IMAGE_SIZE: ${IMAGE_SIZE:-1024x1024}
+      SCIVERSE_BASE_URL: ${SCIVERSE_BASE_URL:-https://api.sciverse.space}
+      SCIVERSE_API_TOKEN: ${SCIVERSE_API_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - corpora:/data/corpora
+    command:
+      - bash
+      - -lc
+      - >-
+        python scripts/wait_for_db.py --timeout 60 &&
+        alembic upgrade head &&
+        python scripts/run_agent_e2e.py
+        --offline-fixtures builtin
+        --auto-confirm
+        --out /data/corpora/demo_runlog.json
+        --out-corpus-hashes /data/corpora/demo_corpus_hashes.json &&
+        python scripts/verify_runlog.py /data/corpora/demo_runlog.json
+        --corpus-hashes /data/corpora/demo_corpus_hashes.json &&
+        python scripts/eval_grounding.py
+        --runlog /data/corpora/demo_runlog.json
+        --out-md /data/corpora/demo_metrics.md
+
+volumes:
+  corpora:
+  pgdata:

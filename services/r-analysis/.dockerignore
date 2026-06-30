@@ -1,0 +1,5 @@
+tests
+*.rds
+*.meta.json
+.Rhistory
+.RData

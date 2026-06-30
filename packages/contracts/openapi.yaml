@@ -1,0 +1,3430 @@
+openapi: 3.1.0
+info:
+  title: BiblioCN Public API (web to agent)
+  version: 0.2.0
+  description: >
+    三服务再架构的公共 API 契约 (前端 to Python agent 后端)。
+    单一真源 (Codex-10): 前后端类型由本文件生成, CI 用响应快照防业务语义漂移。
+    artifact 带 schemaVersion (Codex-2/Codex-10)。corpus 走显式状态机, 用 oneOf+discriminator
+    按状态强建模 (Codex 二审 step1-P1)。错误响应收窄到固定 code, 防契约漂移。
+servers:
+  - url: http://localhost:8000
+    description: 本地 agent 服务
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: 存活探针
+      tags: [meta]
+      responses:
+        "200":
+          description: 健康
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /projects/{projectId}/corpus:
+    post:
+      operationId: createCorpus
+      summary: 上传文献文件并异步解析为语料 (状态机入口, Codex-5)
+      description: >
+        幂等: Phase 1 (T10) 起强制 — 携带 Idempotency-Key 时, 相同 (key, projectId) 的重试
+        返回同一 corpus; 未带 key 时以 (contentHash, dbsource, projectId) 去重。
+        Phase 0: 接受 Idempotency-Key 头但暂不去重 (Codex step3-P2, 不过度声称)。
+      tags: [corpus]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, dbsource]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                dbsource:
+                  $ref: "#/components/schemas/DbSource"
+      responses:
+        "202":
+          description: 已受理, 后台解析中 (status=parsing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CorpusRef"
+        "400":
+          description: 表单/参数校验失败
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+        "413":
+          description: 文件超限 (沿用 50MB)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrPayloadTooLarge"
+        "415":
+          description: 不支持的文件类型/内容无法解析为所选 dbsource (step1-P2)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrUnsupportedFile"
+
+  /projects/{projectId}/corpus/from-topic:
+    post:
+      operationId: createCorpusFromTopic
+      summary: 主题词检索建库 (路径 A, OpenAlex)
+      description: >
+        输入研究主题词, 经 OpenAlex 检索近 N 年文献并补全引用题录, 组装为
+        WoS plaintext 后由 bibliometrix 建为可分析语料。同步返回 (Phase 0)。
+      tags: [corpus]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TopicRequest"
+      responses:
+        "202":
+          description: 已建库 (status=ready/failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CorpusRef"
+        "400":
+          description: 参数校验失败
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+        "422":
+          description: OpenAlex 无结果或解析失败
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+
+  /projects/{projectId}/corpus/from-refs:
+    post:
+      operationId: createCorpusFromRefs
+      summary: 参考文献文本建库 (路径 B, LLM 抽取 + OpenAlex 反查)
+      description: >
+        粘贴非结构化参考文献文本, agent 用 LLM 抽取题录, 再经 OpenAlex 反查补全
+        元数据并建为语料。响应含 matched/unmatched/extracted 统计。
+      tags: [corpus]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefsRequest"
+      responses:
+        "202":
+          description: 已建库 (status=ready/failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CorpusRef"
+        "422":
+          description: 未识别出论文条目或均未在 OpenAlex 匹配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+
+  /projects/{pid}/corpus/materialize:
+    post:
+      operationId: materializeCorpus
+      summary: "M2: 物化项目 included 论文为可分析语料（幂等）"
+      description: >
+        从项目当前 included 论文集合构建冻结语料快照，并调 R /parse-from-records 建库。
+        幂等：相同 included 集合（content_hash 一致）命中已有 ready corpus 直接复用。
+        included 为空时返回 422 EMPTY_INCLUDED。
+      tags: [corpus]
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: 项目 DB id（整数）
+      responses:
+        "200":
+          description: 语料物化成功（ready 或已复用）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CorpusMaterializeResponse"
+        "404":
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "422":
+          description: included 论文为空（EMPTY_INCLUDED）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+        "502":
+          description: R 服务不可达或建库失败
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+
+  /projects/{projectId}/corpus/{corpusId}:
+    get:
+      operationId: getCorpus
+      summary: 查询语料状态, 前端据此 gating (Codex-5)
+      tags: [corpus]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 语料引用 (按状态强建模)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CorpusRef"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  /projects/{projectId}/corpus/{corpusId}/overview:
+    get:
+      operationId: getOverview
+      summary: 领域概览分析, 仅 status=ready 可取
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 概览结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OverviewResult"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料仍在解析 (CORPUS_NOT_READY, 可重试轮询)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+        "422":
+          description: 语料解析失败的终态 (PARSE_FAILED, 不应重试; step1-P1)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrParseFailed"
+        "502":
+          description: R 服务返回坏响应 (ANALYSIS_FAILED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrAnalysisFailed"
+        "503":
+          description: R 服务不可达/熔断 (R_SERVICE_UNAVAILABLE; step1-P1, 区别于 502)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrRUnavailable"
+
+  /projects/{projectId}/corpus/{corpusId}/sources:
+    get:
+      operationId: getSources
+      summary: 来源分析 (核心期刊/h指数/Bradford)
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 来源分析结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourcesResult"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/authors:
+    get:
+      operationId: getAuthors
+      summary: 作者分析 (高产作者/h指数/Lotka)
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 作者分析结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthorsResult"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/documents:
+    get:
+      operationId: getDocuments
+      summary: 文档与关键词 (高被引/词频)
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 文档与关键词结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentsResult"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/authors/production:
+    get:
+      operationId: getAuthorProduction
+      summary: "作者年度产出时间线 (热力图: 作者 × 年份, A4)"
+      description: "返回可用性信封; available:false 也是 HTTP 200。需 PY 字段。"
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 作者年度产出信封
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthorProductionEnvelope"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/documents/keyword-trend:
+    get:
+      operationId: getKeywordTrend
+      summary: "关键词历时演变 (themeRiver / 堆叠面积, A4)"
+      description: "返回可用性信封; available:false 也是 HTTP 200。需 DE+PY 字段。"
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 关键词历时演变信封
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KeywordTrendEnvelope"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/documents/cited-refs:
+    get:
+      operationId: getCitedRefs
+      summary: "高被引参考文献表 (参考文献 | 次数, A4)"
+      description: "返回可用性信封; available:false 也是 HTTP 200。需 CR 字段。"
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 高被引参考文献信封
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CitedRefsEnvelope"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/conceptual/thematic:
+    get:
+      operationId: getThematic
+      summary: "主题战略图 (Callon 中心度×密度 四象限, A5)"
+      description: "返回可用性信封; available:false 也是 HTTP 200。需 DE 字段。"
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 主题战略图信封
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThematicEnvelope"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/conceptual/evolution:
+    get:
+      operationId: getEvolution
+      summary: "主题演进图 (多周期主题流 / Sankey, A5)"
+      description: "返回可用性信封; available:false 也是 HTTP 200。需 DE+PY 且跨度可切≥2 周期。"
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 主题演进图信封
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvolutionEnvelope"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/intellectual/histcite:
+    get:
+      operationId: getHistcite
+      summary: "历史引文图 (时序分层引用脉络, A5)"
+      description: "返回可用性信封; available:false 也是 HTTP 200。需 CR 字段; 节点<2 → not_enough_data。"
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 历史引文图信封
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistciteEnvelope"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/overview/threefield:
+    get:
+      operationId: getThreeField
+      summary: "三字段 Sankey (作者→关键词→来源, A5)"
+      description: "返回可用性信封; available:false 也是 HTTP 200。需 AU+DE+SO 字段。"
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+      responses:
+        "200":
+          description: 三字段 Sankey 信封
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThreeFieldEnvelope"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/conceptual:
+    get:
+      operationId: getConceptual
+      summary: 概念结构 (关键词共现网络)
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 100 }, description: "返回 top-N 节点 (按强度); 前端滑块客户端切片" }
+      responses:
+        "200":
+          description: 关键词共现网络
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkResult"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/intellectual:
+    get:
+      operationId: getIntellectual
+      summary: 知识结构 (参考文献共被引网络)
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 100 }, description: "返回 top-N 节点 (按强度); 前端滑块客户端切片" }
+      responses:
+        "200":
+          description: 共被引网络
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkResult"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /projects/{projectId}/corpus/{corpusId}/social:
+    get:
+      operationId: getSocial
+      summary: 社会结构 (作者/国家合作网络)
+      tags: [analysis]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 100 }, description: "返回 top-N 节点 (按强度); 前端滑块客户端切片" }
+      responses:
+        "200":
+          description: 合作网络
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SocialResult"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "409":
+          description: 语料未就绪
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotReady"
+
+  /library/stats:
+    get:
+      operationId: getLibraryStats
+      summary: 全局文献库统计（totalPapers/withMetadata/withPdf/OCR分布）
+      tags: [library]
+      responses:
+        "200":
+          description: 全局文献库统计
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryStats"
+
+  /projects/{projectId}/library/stats:
+    get:
+      operationId: getProjectLibraryStats
+      summary: 项目作用域文献库统计（含纳排分布）
+      tags: [library]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: 项目文献库统计
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectLibraryStats"
+        "404":
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  /projects/{projectId}/papers/{paperId}:
+    get:
+      operationId: getPaperDetail
+      summary: 取项目内单篇文献详情（含 tags/notes/纳排状态/结构化抽取结果）
+      tags: [library]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: integer
+            description: 项目 DB 主键（int）
+        - name: paperId
+          in: path
+          required: true
+          schema:
+            type: integer
+            description: 文献 DB 主键（int）
+      responses:
+        "200":
+          description: 单篇文献详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaperDetail"
+        "404":
+          description: 项目或文献不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  /projects/{projectId}/papers/import:
+    post:
+      operationId: importPapers
+      summary: 导入 PDF/ZIP 到项目文献库（幂等，M1 BLOCKER）
+      description: >
+        multipart/form-data 上传一个或多个 .pdf 文件，或一个包含 PDF 的 .zip 文件。
+
+        流程：解压(若 ZIP) → 逐篇 ingest_pdfs（已有 sha256 缓存直接复用，不重复 MinerU）
+        → add_paper（dedup by DOI or title hash）→ add_paper_to_project（默认 candidate）。
+
+        幂等：同一 PDF 重复导入（sha256/dedup_key 命中）→ skipped 计数增加，不报错，
+        paperIds 仍含该 id。
+
+        refs 文本（纯 DOI/题录）本期暂不支持，请使用
+        POST /projects/{projectId}/corpus/from-refs。
+      tags: [library]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: integer
+            description: 项目 DB 主键（int）
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: 一个或多个 .pdf 文件，或一个 .zip 文件（内含 PDF）
+                default_status:
+                  type: string
+                  enum: [candidate, included, excluded, maybe]
+                  default: candidate
+                  description: 导入后的默认纳排状态
+      responses:
+        "200":
+          description: 导入结果（含 imported/skipped/failed/paperIds）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PapersImportResponse"
+        "400":
+          description: 参数校验失败（缺少文件、非法 default_status 等）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+        "404":
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  /projects/{projectId}/papers/from-search:
+    post:
+      operationId: addPapersFromSearch
+      summary: 把检索候选批量入库并关联到项目（幂等，P2-T3）
+      description: >
+        接收来自 SearchTool 检索到的候选列表，逐条 add_paper（DOI/title dedup）→
+        add_paper_to_project（默认 candidate）。
+
+        defaultStatus=included 时，关联后再调 set_inclusion 将状态升级为 included。
+
+        幂等：同一候选（DOI/title 命中）重复提交 → skipped+1，不报错，paperIds 仍含该 id。
+      tags: [library]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: integer
+            description: 项目 DB 主键（int）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FromSearchRequest"
+      responses:
+        "200":
+          description: 入库结果（含 imported/skipped/paperIds）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FromSearchResult"
+        "404":
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  /sciverse/ping:
+    post:
+      operationId: pingSciverse
+      summary: Sciverse API 连通性测试
+      description: >
+        使用请求体 baseUrl 或 X-Sciverse-Base-URL 指定 Base URL；Token 仅通过
+        X-Sciverse-Token 请求头发送。Token 只用于本次请求，不落库、不回显。
+      tags: [sciverse]
+      parameters:
+        - name: X-Sciverse-Base-URL
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 2000
+        - name: X-Sciverse-Token
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 4000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SciverseSettingsPayload"
+      responses:
+        "200":
+          description: Sciverse 可用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SciversePingResult"
+        "400":
+          description: Sciverse 配置缺失或参数非法
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+
+  /sciverse/meta-search:
+    post:
+      operationId: searchSciverseMeta
+      summary: Sciverse 元数据检索
+      description: >
+        返回可用于候选卡和 from-search 入库的题录候选，不直接写入数据库。
+      tags: [sciverse]
+      parameters:
+        - name: X-Sciverse-Base-URL
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 2000
+        - name: X-Sciverse-Token
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 4000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SciverseMetaSearchRequest"
+      responses:
+        "200":
+          description: Sciverse 检索结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SciverseMetaSearchResult"
+        "400":
+          description: 参数非法或配置缺失
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+
+  /sciverse/agentic-search:
+    post:
+      operationId: searchSciverseAgentic
+      summary: Sciverse 片段/RAG 检索
+      description: >
+        返回 Sciverse 文本片段和定位信息，用于证据发现；不创建 Paper 记录。
+      tags: [sciverse]
+      parameters:
+        - name: X-Sciverse-Base-URL
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 2000
+        - name: X-Sciverse-Token
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 4000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SciverseAgenticSearchRequest"
+      responses:
+        "200":
+          description: Sciverse 片段检索结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SciverseAgenticSearchResult"
+        "400":
+          description: 参数非法或配置缺失
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+
+  /projects/{projectId}/papers/{paperId}/sciverse/content:
+    post:
+      operationId: fetchSciverseContent
+      summary: 拉取 Sciverse 全文并保存为 Markdown attachment
+      description: >
+        根据请求体 docId 或 paper_external_id 中保存的 Sciverse doc_id 拉取全文文本，
+        保存为 markdown attachment，并进入现有全文预览/综述证据链。
+      tags: [sciverse, library]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: integer
+            description: 项目 DB 主键（int）
+        - name: paperId
+          in: path
+          required: true
+          schema:
+            type: integer
+            description: 文献 DB 主键（int）
+        - name: X-Sciverse-Base-URL
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 2000
+        - name: X-Sciverse-Token
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 4000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SciverseFetchContentRequest"
+      responses:
+        "200":
+          description: 全文保存结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SciverseFetchContentResult"
+        "404":
+          description: 项目/文献关联不存在或 Sciverse 无全文
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "422":
+          description: 文献缺少 Sciverse doc_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+
+  /projects/{projectId}/papers/backfill-metadata:
+    post:
+      operationId: backfillMetadata
+      summary: AI 元数据补全：用 LLM 从已 OCR 全文回填缺失题录（P3-T1）
+      description: >
+        对项目内 OCR-done 且缺 abstract 或 creators 的文献，用 LLM 读取 Markdown 全文首部
+        抽取元数据，仅回填当前为空的字段，不覆盖已有内容。
+
+        逐篇失败隔离：单篇 LLM/JSON/DB 错误不影响批次其他篇。
+        支持 X-LLM-Key 头（用户自带 key）；无 key 时回退服务端 DEEPSEEK。
+      tags: [library]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: integer
+            description: 项目 DB 主键（int）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackfillMetadataRequest"
+      responses:
+        "200":
+          description: 元数据补全结果（含 processed/updated/skipped/failed）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackfillMetadataResult"
+        "404":
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  /projects/{projectId}/papers/extract-structured:
+    post:
+      operationId: extractStructured
+      summary: AI 结构化抽取：用 LLM 从已 OCR 全文抽取研究要素（P3-T3）
+      description: >
+        对项目内 OCR-done 的文献，用 LLM 读取 Markdown 全文首部，
+        抽取 research_question/method/findings/dataset/contribution 五字段，
+        幂等 upsert 到 paper_extraction 表。
+
+        reextract=false（默认）：已有 extraction 的篇自动跳过；reextract=true：强制覆盖更新。
+        逐篇失败隔离：单篇 LLM/JSON/DB 错误不影响批次其他篇。
+        支持 X-LLM-Key 头（用户自带 key）；无 key 时回退服务端 DEEPSEEK。
+      tags: [library]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: integer
+            description: 项目 DB 主键（int）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtractStructuredRequest"
+      responses:
+        "200":
+          description: 结构化抽取结果（含 processed/extracted/skipped/failed）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractStructuredResult"
+        "404":
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  /projects/{projectId}/prisma:
+    post:
+      operationId: buildPrisma
+      summary: PRISMA 2020 流程图计数 + 一致性校验
+      tags: [report]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrismaRequest"
+      responses:
+        "200":
+          description: PRISMA 流程结构 (含 warnings)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrismaResult"
+        "400":
+          description: 计数非法
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+
+  /projects/{projectId}/corpus/{corpusId}/report:
+    post:
+      operationId: exportReport
+      summary: 导出分析报告 (Markdown / HTML / DOCX 附件下载)
+      description: >
+        A7: POST + ReportOptions(title/author/sections/可选 prismaCounts/reviewMarkdown);
+        format 走 query (md/html/docx)。DOCX 经 pandoc 转换, 服务端缺 pandoc 时返回 503,
+        前端据此降级仅显示 md/html。
+      tags: [report]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [md, html, docx]
+            default: md
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReportOptions" }
+      responses:
+        "200":
+          description: 报告文件 (附件)
+          content:
+            text/markdown:
+              schema: { type: string }
+            text/html:
+              schema: { type: string }
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+              schema: { type: string, format: binary }
+        "400":
+          description: format 非法
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+        "503":
+          description: DOCX 不可用 (pandoc 缺失/超时)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+
+  /projects/{projectId}/ai/translate:
+    post:
+      operationId: aiTranslate
+      summary: 文献翻译 (en2zh / zh2en)
+      tags: [ai]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - { name: X-LLM-Key, in: header, required: false, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TranslateRequest" }
+      responses:
+        "200": { description: 译文, content: { application/json: { schema: { $ref: "#/components/schemas/TextResult" } } } }
+        "400": { description: 参数错误, content: { application/json: { schema: { $ref: "#/components/schemas/ErrValidation" } } } }
+
+  /projects/{projectId}/ai/rewrite:
+    post:
+      operationId: aiRewrite
+      summary: 交互重写 (counter/compress/expand/casual)
+      tags: [ai]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - { name: X-LLM-Key, in: header, required: false, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RewriteRequest" }
+      responses:
+        "200": { description: 重写结果, content: { application/json: { schema: { $ref: "#/components/schemas/TextResult" } } } }
+        "400": { description: 参数错误, content: { application/json: { schema: { $ref: "#/components/schemas/ErrValidation" } } } }
+
+  /projects/{projectId}/ai/summary:
+    post:
+      operationId: aiSummary
+      summary: 文本总结
+      tags: [ai]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - { name: X-LLM-Key, in: header, required: false, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SummaryRequest" }
+      responses:
+        "200": { description: 总结, content: { application/json: { schema: { $ref: "#/components/schemas/TextResult" } } } }
+
+  /projects/{projectId}/corpus/{corpusId}/ai/screen:
+    post:
+      operationId: aiScreen
+      summary: 相关性筛选 (批量给语料文献打分)
+      tags: [ai]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+        - { name: X-LLM-Key, in: header, required: false, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScreenRequest" }
+      responses:
+        "200": { description: 筛选结果, content: { application/json: { schema: { $ref: "#/components/schemas/ScreenResult" } } } }
+        "404": { description: 语料不存在, content: { application/json: { schema: { $ref: "#/components/schemas/ErrNotFound" } } } }
+
+  /projects/{projectId}/corpus/{corpusId}/ai/chat:
+    post:
+      operationId: aiChat
+      summary: 与语料对话 (SSE 流式)
+      description: SSE 流, 事件 token/done/error。X-LLM-Key 透传不落盘。
+      tags: [ai]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+        - { name: X-LLM-Key, in: header, required: false, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChatRequest" }
+      responses:
+        "200": { description: SSE 流, content: { text/event-stream: { schema: { type: string } } } }
+        "404": { description: 语料不存在, content: { application/json: { schema: { $ref: "#/components/schemas/ErrNotFound" } } } }
+
+  /projects/{projectId}/corpus/{corpusId}/cite:
+    get:
+      operationId: getCite
+      summary: 引用导出 (GB/T 7714 / APA / MLA)
+      tags: [report]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+        - { name: style, in: query, required: false, schema: { type: string, enum: [gbt7714, apa, mla], default: apa } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, default: 200 } }
+      responses:
+        "200": { description: 引用列表, content: { application/json: { schema: { $ref: "#/components/schemas/CiteResult" } } } }
+        "400": { description: style 非法, content: { application/json: { schema: { $ref: "#/components/schemas/ErrValidation" } } } }
+        "404": { description: 语料不存在, content: { application/json: { schema: { $ref: "#/components/schemas/ErrNotFound" } } } }
+
+  /projects/{projectId}/corpus/{corpusId}/review:
+    post:
+      operationId: streamReview
+      summary: 流式生成综述 (SSE)
+      description: >
+        SSE 流 (text/event-stream)。事件: meta(模板+章节) / chapter(章节开始) /
+        token(增量正文) / citations(引用校验 summary+annotated) / done / error。
+        用户自带 LLM key 经 X-LLM-Key 头透传, 不落盘 (沿用 v0.6)。前端用 fetch+ReadableStream
+        消费 (非 EventSource, 因需 POST body + 自定义头)。
+      tags: [ai]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/CorpusId"
+        - name: X-LLM-Key
+          in: header
+          required: false
+          description: 用户自带 LLM API key (会话级, 不落盘); 缺省用服务端 key 或 fake
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewRequest"
+      responses:
+        "200":
+          description: SSE 流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          description: 未知论型
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+        "404":
+          description: 语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  # --- M4 工件端点 ---
+
+  /projects/{pid}/artifacts:
+    get:
+      operationId: listArtifacts
+      summary: 列出项目工件（可按 pinned 过滤）
+      tags: [artifact]
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: pinned
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: 工件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifacts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ArtifactItem"
+        "404":
+          description: 项目不存在
+    post:
+      operationId: createArtifact
+      summary: 创建/pin 工件
+      tags: [artifact]
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArtifactCreateRequest"
+      responses:
+        "201":
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactItem"
+
+  /projects/{pid}/artifacts/{aid}:
+    patch:
+      operationId: patchArtifact
+      summary: 更新工件（title/annotation/pinned/order）
+      tags: [artifact]
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: aid
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArtifactPatchRequest"
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactItem"
+        "404":
+          description: 工件不存在
+    delete:
+      operationId: deleteArtifact
+      summary: 删除工件
+      tags: [artifact]
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: aid
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: 删除成功
+        "404":
+          description: 工件不存在
+
+  # ============================================================
+  # 研究副驾 · GAP 发现 + 价值核验（HITL）
+  # services/agent 实现真实 endpoint；前端据本节生成类型。形状以此为准。
+  # ============================================================
+  /projects/{pid}/corpus/{cid}/gaps:discover:
+    post:
+      operationId: discoverGaps
+      summary: 启动 GAP 发现 run（scratchpad 编排，异步）
+      description: >
+        以 PaperSummary（map 阶段产物）为输入，gap-finder subagent 用 scratchpad
+        迭代产出 GapCandidate（concept/method/theory 三 lens）。异步：返回 run_id，
+        前端轮询 GET .../scratchpad 看实时累积。HITL：不自动定稿。
+      tags: [research]
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: cid
+          in: path
+          required: true
+          description: R 分析语料 id（rCorpusId 字符串）
+          schema:
+            type: string
+            minLength: 1
+            # 安全 segment（codex B1-P2）：禁 : / 等路径敏感字符，防与 AIP 自定义方法冲突
+            pattern: '^[A-Za-z0-9._-]+$'
+      responses:
+        "202":
+          description: 已受理，GAP 发现 run 后台运行中
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GapDiscoverAccepted"
+        "404":
+          description: 项目或语料不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  /projects/{pid}/agent/runs/{rid}/scratchpad:
+    get:
+      operationId: getScratchpad
+      summary: 拉取本 run 实时 scratchpad（HITL 视图/轮询）
+      description: >
+        类 harness 工作记忆：agent 在一次 GAP run 内反复读写的结构化条目（GapCandidate）。
+        前端像「研究笔记本」实时渲染，并喂回 LLM 下一轮、作为价值核验输入。
+      tags: [research]
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: rid
+          in: path
+          required: true
+          description: GAP 发现 run id
+          schema:
+            type: string
+            minLength: 1
+            # 安全 segment（codex B1-P2）
+            pattern: '^[A-Za-z0-9._-]+$'
+      responses:
+        "200":
+          description: 本 run 当前 scratchpad 快照
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScratchpadState"
+        "404":
+          description: run 不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  /projects/{pid}/gaps/{gap_id}:verify:
+    post:
+      operationId: verifyGap
+      summary: 启动该 GAP 的价值核验（反向检索证伪 + 计量结构佐证，异步）
+      description: >
+        value-evidence subagent 攒 EvidencePack（反向检索命中 + 计量结构指标），
+        确定性 resolver 出 ValueVerdict（decided_by=deterministic）。异步：返回 verify_run_id。
+      tags: [research]
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: gap_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            # 安全 segment（codex B1-P2）：禁 : / 等，避免与 /gaps/{gap_id}:verify 路由歧义
+            pattern: '^[A-Za-z0-9._-]+$'
+      responses:
+        "202":
+          description: 已受理，价值核验 run 后台运行中
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GapVerifyAccepted"
+        "404":
+          description: GAP 不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  /projects/{pid}/gaps/{gap_id}/verdict:
+    get:
+      operationId: getGapVerdict
+      summary: 取价值裁决 + 证据包
+      description: >
+        ValueVerdict 由确定性 resolver 出（decided_by 恒为 deterministic）；
+        附带攒证的 EvidencePack 供透明审阅（反向检索命中对比、阈值、计量结构）。
+      tags: [research]
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: gap_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            # 安全 segment（codex B1-P2）：禁 : / 等，避免与 /gaps/{gap_id}:verify 路由歧义
+            pattern: '^[A-Za-z0-9._-]+$'
+      responses:
+        "200":
+          description: 价值裁决（含证据包）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GapVerdictResult"
+        "404":
+          description: 裁决尚未产生或 GAP 不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+  /projects/{pid}/gaps/{gap_id}:
+    patch:
+      operationId: patchGap
+      summary: HITL 人工 accept/reject/revise
+      description: >
+        人在环上裁决：accept/reject 改 status；revise 回写 statement（并置回 draft 以便重核）。
+        决策留痕进 runlog。绝不自动定稿（HITL 红线）。
+      tags: [research]
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: gap_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            # 安全 segment（codex B1-P2）：禁 : / 等，避免与 /gaps/{gap_id}:verify 路由歧义
+            pattern: '^[A-Za-z0-9._-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GapPatchRequest"
+      responses:
+        "200":
+          description: 更新后的 GapCandidate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GapCandidate"
+        "400":
+          description: action/statement 校验失败
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrValidation"
+        "404":
+          description: GAP 不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrNotFound"
+
+components:
+  parameters:
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    CorpusId:
+      name: corpusId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 上传重试去重键 (step1-P1)
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+
+  schemas:
+    Health:
+      type: object
+      required: [status, service]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        service:
+          type: string
+          example: agent
+        rService:
+          type: string
+          enum: [up, down, unknown]
+          description: 下游 R 分析服务可达性
+
+    DbSource:
+      type: string
+      description: 数据来源, 切片1 仅 wos/scopus, pubmed/openalex 后续 (Codex-13)
+      enum: [wos, scopus]
+
+    CorpusStatus:
+      type: string
+      description: 语料状态机 (Codex-5)
+      enum: [parsing, ready, failed]
+
+    # --- corpus 按状态强建模 (step1-P1): oneOf + discriminator ---
+    CorpusBase:
+      type: object
+      required: [corpusId, projectId, status, schemaVersion, dbsource, createdAt]
+      properties:
+        corpusId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+        status:
+          $ref: "#/components/schemas/CorpusStatus"
+        schemaVersion:
+          type: integer
+          const: 1
+          description: artifact schema 版本 (Codex-2/Codex-10)
+        dbsource:
+          $ref: "#/components/schemas/DbSource"
+        createdAt:
+          type: string
+          format: date-time
+
+    CorpusParsing:
+      allOf:
+        - $ref: "#/components/schemas/CorpusBase"
+        - type: object
+          required: [status]
+          properties:
+            status:
+              const: parsing
+
+    CorpusReady:
+      allOf:
+        - $ref: "#/components/schemas/CorpusBase"
+        - type: object
+          required: [status, documentCount]
+          properties:
+            status:
+              const: ready
+            documentCount:
+              type: integer
+              minimum: 0
+
+    CorpusFailed:
+      allOf:
+        - $ref: "#/components/schemas/CorpusBase"
+        - type: object
+          required: [status, error]
+          properties:
+            status:
+              const: failed
+            error:
+              type: string
+              description: 失败原因, 已脱敏 (Codex-18)
+
+    CorpusRef:
+      oneOf:
+        - $ref: "#/components/schemas/CorpusParsing"
+        - $ref: "#/components/schemas/CorpusReady"
+        - $ref: "#/components/schemas/CorpusFailed"
+      discriminator:
+        propertyName: status
+        mapping:
+          parsing: "#/components/schemas/CorpusParsing"
+          ready: "#/components/schemas/CorpusReady"
+          failed: "#/components/schemas/CorpusFailed"
+
+    # --- M2: corpus 物化 ---
+    ActiveCorpusDetail:
+      type: object
+      description: >
+        项目当前 active corpus 摘要，内嵌于 ProjectDetail。
+        corpusId 为 Postgres DB integer；rCorpusId 为 R 字符串 ID（调分析端点时透传）。
+        stale=true 表示当前 included 集合与本 corpus 的 contentHash 不同，需重算。
+      required: [corpusId, status, documentCount, contentHash, stale]
+      properties:
+        corpusId:
+          type: integer
+          description: Postgres DB corpus.id
+        rCorpusId:
+          type: string
+          nullable: true
+          description: R 字符串语料 ID；status != ready 时为 null
+        status:
+          type: string
+          enum: [parsing, ready, failed]
+        documentCount:
+          type: integer
+          minimum: 0
+        contentHash:
+          type: string
+          description: included 集合指纹（sha256）
+        stale:
+          type: boolean
+          description: 当前 included 集合与 corpus 快照不同时为 true
+
+    CorpusMaterializeResponse:
+      type: object
+      description: "POST /projects/{pid}/corpus/materialize 响应体"
+      required: [corpusId, status, documentCount, contentHash]
+      properties:
+        corpusId:
+          type: integer
+          description: Postgres DB corpus.id
+        rCorpusId:
+          type: string
+          nullable: true
+          description: R 字符串语料 ID；status=parsing/failed 时为 null
+        status:
+          type: string
+          enum: [parsing, ready, failed]
+        documentCount:
+          type: integer
+          minimum: 0
+        contentHash:
+          type: string
+
+    TopicRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: 研究主题词 (中英皆可, OpenAlex 全文检索)
+        n:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+          description: 取多少篇主论文
+        since:
+          type: string
+          default: "2016-01-01"
+          description: 发表日下限 (YYYY-MM-DD)
+        withRefs:
+          type: boolean
+          default: true
+          description: 是否同步补全引用题录 (慢但完整)
+
+    RefsRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 20000
+          description: 非结构化参考文献文本 (清单/Google Scholar/APA 等)
+        withRefs:
+          type: boolean
+          default: true
+
+    OverviewResult:
+      type: object
+      required: [schemaVersion, projectId, corpusId, stats, annualProduction]
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+        projectId:
+          type: string
+          description: 跨项目防错锚点 (step1-P2)
+        corpusId:
+          type: string
+          format: uuid
+        stats:
+          $ref: "#/components/schemas/OverviewStats"
+        annualProduction:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnnualPoint"
+
+    OverviewStats:
+      type: object
+      required: [documents, sources, authors, avgCitationsPerDoc, timespanFrom, timespanTo]
+      properties:
+        documents:
+          type: integer
+          minimum: 0
+        sources:
+          type: integer
+          minimum: 0
+          description: 期刊或来源数
+        authors:
+          type: integer
+          minimum: 0
+        keywordsPlus:
+          type: integer
+          minimum: 0
+          nullable: true
+        authorKeywords:
+          type: integer
+          minimum: 0
+          nullable: true
+        avgCitationsPerDoc:
+          type: number
+          minimum: 0
+        timespanFrom:
+          type: integer
+          description: 起始年
+        timespanTo:
+          type: integer
+          description: 结束年
+        # A4 可选增量: 语料级 H 指数 / 年均增长率(CAGR, %), 缺/边界→null
+        hIndex:
+          type: integer
+          minimum: 0
+          nullable: true
+        annualGrowthRate:
+          type: number
+          nullable: true
+          description: 年均增长率 CAGR (%); 单年/边界为 null
+
+    AnnualPoint:
+      type: object
+      required: [year, articles]
+      properties:
+        year:
+          type: integer
+        articles:
+          type: integer
+          minimum: 0
+
+    SourceItem:
+      type: object
+      required: [source, articles]
+      properties:
+        source: { type: string }
+        articles: { type: integer, minimum: 0 }
+    HSourceItem:
+      type: object
+      required: [source, h]
+      properties:
+        source: { type: string }
+        h: { type: integer, minimum: 0 }
+        # A4 可选增量: g 指数 / m 指数(缺基准年→null,不返回) / 被引总数 tc
+        g: { type: integer, minimum: 0, nullable: true }
+        m: { type: number, nullable: true }
+        tc: { type: integer, minimum: 0, nullable: true }
+    BradfordItem:
+      type: object
+      required: [source, zone, freq]
+      properties:
+        source: { type: string }
+        zone: { type: string }
+        freq: { type: integer, minimum: 0 }
+        # A4 可选增量: 排名(行号) + 累计频次百分比(0-100, 保留1位)
+        rank: { type: integer, minimum: 1, nullable: true }
+        cumPct: { type: number, minimum: 0, nullable: true }
+    SourcesResult:
+      type: object
+      required: [schemaVersion, projectId, corpusId, topSources, hIndex, bradford]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        projectId: { type: string }
+        corpusId: { type: string, format: uuid }
+        topSources: { type: array, items: { $ref: "#/components/schemas/SourceItem" } }
+        hIndex: { type: array, items: { $ref: "#/components/schemas/HSourceItem" } }
+        bradford: { type: array, items: { $ref: "#/components/schemas/BradfordItem" } }
+
+    AuthorItem:
+      type: object
+      required: [author, articles]
+      properties:
+        author: { type: string }
+        articles: { type: integer, minimum: 0 }
+    HAuthorItem:
+      type: object
+      required: [author, h]
+      properties:
+        author: { type: string }
+        h: { type: integer, minimum: 0 }
+        # A4 可选增量: g 指数 / m 指数(缺基准年→null,不返回) / 被引总数 tc
+        g: { type: integer, minimum: 0, nullable: true }
+        m: { type: number, nullable: true }
+        tc: { type: integer, minimum: 0, nullable: true }
+    LotkaPoint:
+      type: object
+      required: [articles, authors]
+      properties:
+        articles: { type: integer, minimum: 0 }
+        authors: { type: integer, minimum: 0 }
+    Lotka:
+      type: object
+      properties:
+        beta: { type: number, nullable: true }
+        distribution: { type: array, items: { $ref: "#/components/schemas/LotkaPoint" } }
+    AuthorsResult:
+      type: object
+      required: [schemaVersion, projectId, corpusId, topAuthors, hIndex, lotka]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        projectId: { type: string }
+        corpusId: { type: string, format: uuid }
+        topAuthors: { type: array, items: { $ref: "#/components/schemas/AuthorItem" } }
+        hIndex: { type: array, items: { $ref: "#/components/schemas/HAuthorItem" } }
+        lotka: { $ref: "#/components/schemas/Lotka" }
+
+    CitedDoc:
+      type: object
+      required: [cited]
+      properties:
+        title: { type: string, nullable: true }
+        author: { type: string, nullable: true }
+        year: { type: integer, nullable: true }
+        cited: { type: integer, minimum: 0 }
+    KeywordItem:
+      type: object
+      required: [term, freq]
+      properties:
+        term: { type: string }
+        freq: { type: integer, minimum: 0 }
+    DocumentsResult:
+      type: object
+      required: [schemaVersion, projectId, corpusId, topCited, keywords]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        projectId: { type: string }
+        corpusId: { type: string, format: uuid }
+        topCited: { type: array, items: { $ref: "#/components/schemas/CitedDoc" } }
+        keywords: { type: array, items: { $ref: "#/components/schemas/KeywordItem" } }
+
+    # --- A4 统一可用性契约 (AnalysisEnvelope, spec §4.0) ---
+    AnalysisUnavailableReason:
+      type: string
+      description: 高级图不可用原因 (区分 missing_field/not_enough_data/computed_empty/analysis_error)
+      enum: [missing_field, not_enough_data, computed_empty, analysis_error]
+    # available:false 半信封 (oneOf discriminator 的 false 分支基类)
+    AnalysisUnavailable:
+      type: object
+      required: [available, reason, message]
+      properties:
+        available: { type: boolean, enum: [false] }
+        reason: { $ref: "#/components/schemas/AnalysisUnavailableReason" }
+        missingField: { type: string, nullable: true }
+        message: { type: string }
+        howto: { type: string, nullable: true }
+        detail: { type: string, nullable: true }
+        # 信封端点也回传 schemaVersion/corpusId (透传锚点)
+        schemaVersion: { type: integer, nullable: true }
+        corpusId: { type: string, nullable: true }
+        projectId: { type: string, nullable: true }
+
+    # 作者年度产出 (热力图: 作者 × 年份)
+    AuthorProductionCell:
+      type: object
+      required: [author, year, articles]
+      properties:
+        author: { type: string }
+        year: { type: integer }
+        articles: { type: integer, minimum: 0 }
+    AuthorProductionData:
+      type: object
+      required: [authors, years, cells]
+      properties:
+        authors: { type: array, items: { type: string } }
+        years: { type: array, items: { type: integer } }
+        cells: { type: array, items: { $ref: "#/components/schemas/AuthorProductionCell" } }
+    AuthorProductionOk:
+      type: object
+      required: [available, data]
+      properties:
+        available: { type: boolean, enum: [true] }
+        data: { $ref: "#/components/schemas/AuthorProductionData" }
+        schemaVersion: { type: integer, nullable: true }
+        corpusId: { type: string, nullable: true }
+        projectId: { type: string, nullable: true }
+    # 判别式联合按 available 字段 (true/false 分支各自 enum 约束)。
+    # 注: 不用 OpenAPI discriminator 关键字 — openapi-typescript 对 boolean 判别属性
+    # 会把 available 改写成 schema 名字符串, 破坏 TS 字面量联合; 用 enum 约束即可判别。
+    AuthorProductionEnvelope:
+      oneOf:
+        - $ref: "#/components/schemas/AuthorProductionOk"
+        - $ref: "#/components/schemas/AnalysisUnavailable"
+
+    # 关键词历时演变 (themeRiver / 堆叠面积)
+    KeywordTrendCell:
+      type: object
+      required: [year, term, freq]
+      properties:
+        year: { type: integer }
+        term: { type: string }
+        freq: { type: integer, minimum: 0 }
+    KeywordTrendData:
+      type: object
+      required: [years, terms, cells]
+      properties:
+        years: { type: array, items: { type: integer } }
+        terms: { type: array, items: { type: string } }
+        cells: { type: array, items: { $ref: "#/components/schemas/KeywordTrendCell" } }
+    KeywordTrendOk:
+      type: object
+      required: [available, data]
+      properties:
+        available: { type: boolean, enum: [true] }
+        data: { $ref: "#/components/schemas/KeywordTrendData" }
+        schemaVersion: { type: integer, nullable: true }
+        corpusId: { type: string, nullable: true }
+        projectId: { type: string, nullable: true }
+    KeywordTrendEnvelope:
+      oneOf:
+        - $ref: "#/components/schemas/KeywordTrendOk"
+        - $ref: "#/components/schemas/AnalysisUnavailable"
+
+    # 高被引参考文献 (参考文献 | 次数)
+    CitedRefItem:
+      type: object
+      required: [ref, count]
+      properties:
+        ref: { type: string }
+        count: { type: integer, minimum: 0 }
+    CitedRefsOk:
+      type: object
+      required: [available, data]
+      properties:
+        available: { type: boolean, enum: [true] }
+        data: { type: array, items: { $ref: "#/components/schemas/CitedRefItem" } }
+        schemaVersion: { type: integer, nullable: true }
+        corpusId: { type: string, nullable: true }
+        projectId: { type: string, nullable: true }
+    CitedRefsEnvelope:
+      oneOf:
+        - $ref: "#/components/schemas/CitedRefsOk"
+        - $ref: "#/components/schemas/AnalysisUnavailable"
+
+    # --- A5 高级图② 信封 (照 A4 写法; 用 enum 判别不用 discriminator 关键字) ---
+
+    # 主题战略图 (Callon 中心度×密度 四象限散点)
+    ThematicCluster:
+      type: object
+      required: [label, centrality, density, freq]
+      properties:
+        label: { type: string }
+        centrality: { type: number }
+        density: { type: number }
+        freq: { type: integer, minimum: 0 }
+    ThematicData:
+      type: object
+      required: [clusters]
+      properties:
+        clusters: { type: array, items: { $ref: "#/components/schemas/ThematicCluster" } }
+    ThematicOk:
+      type: object
+      required: [available, data]
+      properties:
+        available: { type: boolean, enum: [true] }
+        data: { $ref: "#/components/schemas/ThematicData" }
+        schemaVersion: { type: integer, nullable: true }
+        corpusId: { type: string, nullable: true }
+        projectId: { type: string, nullable: true }
+    ThematicEnvelope:
+      oneOf:
+        - $ref: "#/components/schemas/ThematicOk"
+        - $ref: "#/components/schemas/AnalysisUnavailable"
+
+    # 主题演进图 (多周期主题流 / Sankey)
+    EvolutionNode:
+      type: object
+      required: [name, period, id]
+      properties:
+        name: { type: string }
+        period: { type: string }
+        id: { type: integer }
+    EvolutionLink:
+      type: object
+      required: [source, target, value]
+      properties:
+        source: { type: integer }
+        target: { type: integer }
+        value: { type: number }
+    EvolutionData:
+      type: object
+      required: [nodes, links]
+      properties:
+        nodes: { type: array, items: { $ref: "#/components/schemas/EvolutionNode" } }
+        links: { type: array, items: { $ref: "#/components/schemas/EvolutionLink" } }
+    EvolutionOk:
+      type: object
+      required: [available, data]
+      properties:
+        available: { type: boolean, enum: [true] }
+        data: { $ref: "#/components/schemas/EvolutionData" }
+        schemaVersion: { type: integer, nullable: true }
+        corpusId: { type: string, nullable: true }
+        projectId: { type: string, nullable: true }
+    EvolutionEnvelope:
+      oneOf:
+        - $ref: "#/components/schemas/EvolutionOk"
+        - $ref: "#/components/schemas/AnalysisUnavailable"
+
+    # 历史引文图 (时序分层引用脉络); 边用 from/to (引用方→被引方)
+    HistciteNode:
+      type: object
+      required: [id, label, localCites]
+      properties:
+        id: { type: string }
+        year: { type: integer, nullable: true }
+        label: { type: string }
+        localCites: { type: integer, minimum: 0 }
+    HistciteEdge:
+      type: object
+      required: [from, to]
+      properties:
+        from: { type: string }
+        to: { type: string }
+    HistciteData:
+      type: object
+      required: [nodes, edges]
+      properties:
+        nodes: { type: array, items: { $ref: "#/components/schemas/HistciteNode" } }
+        edges: { type: array, items: { $ref: "#/components/schemas/HistciteEdge" } }
+    HistciteOk:
+      type: object
+      required: [available, data]
+      properties:
+        available: { type: boolean, enum: [true] }
+        data: { $ref: "#/components/schemas/HistciteData" }
+        schemaVersion: { type: integer, nullable: true }
+        corpusId: { type: string, nullable: true }
+        projectId: { type: string, nullable: true }
+    HistciteEnvelope:
+      oneOf:
+        - $ref: "#/components/schemas/HistciteOk"
+        - $ref: "#/components/schemas/AnalysisUnavailable"
+
+    # 三字段 Sankey (作者→关键词→来源); layer 0=作者/1=关键词/2=来源
+    ThreeFieldNode:
+      type: object
+      required: [name, layer]
+      properties:
+        name: { type: string }
+        layer: { type: integer, minimum: 0, maximum: 2 }
+    ThreeFieldLink:
+      type: object
+      required: [source, target, value]
+      properties:
+        source: { type: string }
+        target: { type: string }
+        value: { type: integer, minimum: 0 }
+    ThreeFieldData:
+      type: object
+      required: [nodes, links]
+      properties:
+        nodes: { type: array, items: { $ref: "#/components/schemas/ThreeFieldNode" } }
+        links: { type: array, items: { $ref: "#/components/schemas/ThreeFieldLink" } }
+    ThreeFieldOk:
+      type: object
+      required: [available, data]
+      properties:
+        available: { type: boolean, enum: [true] }
+        data: { $ref: "#/components/schemas/ThreeFieldData" }
+        schemaVersion: { type: integer, nullable: true }
+        corpusId: { type: string, nullable: true }
+        projectId: { type: string, nullable: true }
+    ThreeFieldEnvelope:
+      oneOf:
+        - $ref: "#/components/schemas/ThreeFieldOk"
+        - $ref: "#/components/schemas/AnalysisUnavailable"
+
+    GraphNode:
+      type: object
+      required: [id, label, value]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        value: { type: number, minimum: 0 }
+    GraphEdge:
+      type: object
+      required: [source, target, weight]
+      properties:
+        source: { type: string }
+        target: { type: string }
+        weight: { type: number, minimum: 0 }
+    Graph:
+      type: object
+      required: [nodes, edges]
+      properties:
+        nodes: { type: array, items: { $ref: "#/components/schemas/GraphNode" } }
+        edges: { type: array, items: { $ref: "#/components/schemas/GraphEdge" } }
+    NetworkResult:
+      type: object
+      required: [schemaVersion, projectId, corpusId, network, graph]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        projectId: { type: string }
+        corpusId: { type: string, format: uuid }
+        network: { type: string, description: 网络类型标识 }
+        graph: { $ref: "#/components/schemas/Graph" }
+    SocialResult:
+      type: object
+      required: [schemaVersion, projectId, corpusId, authorCollab, countryCollab]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        projectId: { type: string }
+        corpusId: { type: string, format: uuid }
+        authorCollab: { $ref: "#/components/schemas/Graph" }
+        countryCollab: { $ref: "#/components/schemas/Graph" }
+
+    PrismaRequest:
+      type: object
+      required: [identified, duplicates, screened, excluded, included]
+      properties:
+        identified: { type: integer, minimum: 0 }
+        duplicates: { type: integer, minimum: 0 }
+        screened: { type: integer, minimum: 0 }
+        excluded: { type: integer, minimum: 0 }
+        included: { type: integer, minimum: 0 }
+    PrismaStage:
+      type: object
+      required: [key, label, count]
+      properties:
+        key: { type: string }
+        label: { type: string }
+        count: { type: integer }
+    PrismaResult:
+      type: object
+      required: [schemaVersion, stages, warnings]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        stages: { type: array, items: { $ref: "#/components/schemas/PrismaStage" } }
+        warnings: { type: array, items: { type: string } }
+
+    TranslateRequest:
+      type: object
+      required: [text, direction]
+      properties:
+        text: { type: string, minLength: 1, maxLength: 20000 }
+        direction: { type: string, enum: [en2zh, zh2en] }
+    RewriteRequest:
+      type: object
+      required: [text, action]
+      properties:
+        text: { type: string, minLength: 1, maxLength: 20000 }
+        action: { type: string, enum: [counter, compress, expand, casual] }
+    SummaryRequest:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string, minLength: 1, maxLength: 20000 }
+    TextResult:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string }
+    ScreenRequest:
+      type: object
+      required: [topic]
+      properties:
+        topic: { type: string, minLength: 1, maxLength: 500 }
+        limit: { type: integer, minimum: 1, maximum: 50, default: 10 }
+    ScreenItem:
+      type: object
+      required: [idx, reason]
+      properties:
+        idx: { type: integer }
+        relevance: { type: integer, nullable: true, minimum: 0, maximum: 10 }
+        reason: { type: string }
+    ScreenResult:
+      type: object
+      required: [results]
+      properties:
+        results: { type: array, items: { $ref: "#/components/schemas/ScreenItem" } }
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role: { type: string, enum: [user, assistant] }
+        content: { type: string }
+    ChatRequest:
+      type: object
+      required: [query]
+      properties:
+        query: { type: string, minLength: 1, maxLength: 2000 }
+        history: { type: array, items: { $ref: "#/components/schemas/ChatMessage" } }
+    CiteResult:
+      type: object
+      required: [schemaVersion, projectId, corpusId, style, citations]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        projectId: { type: string }
+        corpusId: { type: string, format: uuid }
+        style: { type: string, enum: [gbt7714, apa, mla] }
+        citations: { type: array, items: { type: string } }
+
+    PrismaCounts:
+      type: object
+      description: A7 报告 PRISMA 章节计数 (可选外部内容)
+      required: [identified, duplicates, screened, excluded, included]
+      properties:
+        identified: { type: integer, minimum: 0 }
+        duplicates: { type: integer, minimum: 0 }
+        screened: { type: integer, minimum: 0 }
+        excluded: { type: integer, minimum: 0 }
+        included: { type: integer, minimum: 0 }
+
+    ReportOptions:
+      type: object
+      description: >
+        A7 报告导出选项。所有字段可省略(请求体可空); 服务端默认: title="文献计量分析报告",
+        sections=[overview,sources,authors,documents,references]。sections 若提供须非空(minItems:1)。
+        prismaCounts/reviewMarkdown 为可选外部内容, 前端有则传, 无则对应 section 渲染"未提供"提示。
+        (不在 schema 写 default 关键字: openapi-typescript 会据此把字段标为必填, 破坏"可省略"契约。)
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        author:
+          type: string
+          maxLength: 200
+          nullable: true
+        sections:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [overview, sources, authors, documents, references, prisma, review]
+        prismaCounts:
+          $ref: "#/components/schemas/PrismaCounts"
+          nullable: true
+        reviewMarkdown:
+          type: string
+          maxLength: 200000
+          nullable: true
+
+    ReviewRequest:
+      type: object
+      required: [type, topic]
+      properties:
+        type:
+          type: string
+          description: 论型
+          enum: [undergrad, master, phd, grant, proposal, sci_intro]
+        topic:
+          type: string
+          minLength: 1
+          maxLength: 500
+
+    # --- 错误: 基类 + 收窄到固定 code 的子类型 (step1-P1) ---
+    ApiErrorBase:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - VALIDATION_ERROR
+            - CORPUS_NOT_FOUND
+            - CORPUS_NOT_READY
+            - PARSE_FAILED
+            - ANALYSIS_FAILED
+            - R_SERVICE_UNAVAILABLE
+            - PAYLOAD_TOO_LARGE
+            - UNSUPPORTED_FILE
+            - INTERNAL
+        message:
+          type: string
+          description: 人类可读, 已脱敏 (Codex-18)
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+    ApiError:
+      allOf:
+        - $ref: "#/components/schemas/ApiErrorBase"
+    ErrValidation:
+      allOf:
+        - $ref: "#/components/schemas/ApiErrorBase"
+        - type: object
+          properties:
+            code:
+              const: VALIDATION_ERROR
+    ErrNotFound:
+      allOf:
+        - $ref: "#/components/schemas/ApiErrorBase"
+        - type: object
+          properties:
+            code:
+              const: CORPUS_NOT_FOUND
+    ErrPayloadTooLarge:
+      allOf:
+        - $ref: "#/components/schemas/ApiErrorBase"
+        - type: object
+          properties:
+            code:
+              const: PAYLOAD_TOO_LARGE
+    ErrUnsupportedFile:
+      allOf:
+        - $ref: "#/components/schemas/ApiErrorBase"
+        - type: object
+          properties:
+            code:
+              const: UNSUPPORTED_FILE
+    ErrNotReady:
+      allOf:
+        - $ref: "#/components/schemas/ApiErrorBase"
+        - type: object
+          properties:
+            code:
+              const: CORPUS_NOT_READY
+    ErrParseFailed:
+      allOf:
+        - $ref: "#/components/schemas/ApiErrorBase"
+        - type: object
+          properties:
+            code:
+              const: PARSE_FAILED
+    ErrAnalysisFailed:
+      allOf:
+        - $ref: "#/components/schemas/ApiErrorBase"
+        - type: object
+          properties:
+            code:
+              const: ANALYSIS_FAILED
+    ErrRUnavailable:
+      allOf:
+        - $ref: "#/components/schemas/ApiErrorBase"
+        - type: object
+          properties:
+            code:
+              const: R_SERVICE_UNAVAILABLE
+
+    # --- M1 文献导入 ---
+    ImportFailedItem:
+      type: object
+      required: [name, reason]
+      properties:
+        name:
+          type: string
+          description: 文件名（含扩展名）
+        reason:
+          type: string
+          description: 失败原因描述
+
+    PapersImportResponse:
+      type: object
+      required: [imported, skipped, failed, paperIds]
+      properties:
+        imported:
+          type: integer
+          minimum: 0
+          description: 本次新导入（首次关联到项目）的文献数
+        skipped:
+          type: integer
+          minimum: 0
+          description: 幂等跳过（paper 已存在于项目）的文献数
+        failed:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImportFailedItem"
+          description: 解析/入库失败的文献清单（空数组表示全部成功）
+        paperIds:
+          type: array
+          items:
+            type: integer
+          description: 所有成功入库的 paper DB id（含 imported + skipped 两类）
+
+    # --- M4 工件 ---
+
+    ArtifactItem:
+      type: object
+      required: [id, projectId, type, title, pinned, order]
+      properties:
+        id:
+          type: integer
+        projectId:
+          type: integer
+        runId:
+          type: integer
+          nullable: true
+        type:
+          type: string
+          description: review | analysis | extraction | paperset
+        title:
+          type: string
+        sourceEventSeq:
+          type: integer
+          nullable: true
+        contentRef:
+          type: string
+          nullable: true
+          description: "内容定位符（如 run:{runId}），供前端取 RunLog 内容"
+        pinned:
+          type: boolean
+        userAnnotation:
+          type: string
+          nullable: true
+        order:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    ArtifactCreateRequest:
+      type: object
+      properties:
+        type:
+          type: string
+          default: review
+        title:
+          type: string
+          maxLength: 500
+        runId:
+          type: integer
+          nullable: true
+        sourceEventSeq:
+          type: integer
+          nullable: true
+        contentRef:
+          type: string
+          nullable: true
+        pinned:
+          type: boolean
+          default: false
+        userAnnotation:
+          type: string
+          nullable: true
+        order:
+          type: integer
+          default: 0
+
+    ArtifactPatchRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          nullable: true
+        pinned:
+          type: boolean
+          nullable: true
+        userAnnotation:
+          type: string
+          nullable: true
+        order:
+          type: integer
+          nullable: true
+
+    # --- W1 文献库统计 ---
+    OcrBreakdown:
+      type: object
+      required: [done, processing, pending, failed, none]
+      properties:
+        done:
+          type: integer
+          minimum: 0
+        processing:
+          type: integer
+          minimum: 0
+        pending:
+          type: integer
+          minimum: 0
+        failed:
+          type: integer
+          minimum: 0
+        none:
+          type: integer
+          minimum: 0
+
+    LibraryStats:
+      type: object
+      required: [totalPapers, withMetadata, withPdf, ocr]
+      properties:
+        totalPapers:
+          type: integer
+          minimum: 0
+        withMetadata:
+          type: integer
+          minimum: 0
+        withPdf:
+          type: integer
+          minimum: 0
+        ocr:
+          $ref: "#/components/schemas/OcrBreakdown"
+
+    InclusionBreakdown:
+      type: object
+      required: [included, candidate, excluded, maybe]
+      properties:
+        included:
+          type: integer
+          minimum: 0
+        candidate:
+          type: integer
+          minimum: 0
+        excluded:
+          type: integer
+          minimum: 0
+        maybe:
+          type: integer
+          minimum: 0
+
+    ProjectLibraryStats:
+      type: object
+      required: [projectPapers, inclusion, withMetadata, withPdf, ocr]
+      properties:
+        projectPapers:
+          type: integer
+          minimum: 0
+        inclusion:
+          $ref: "#/components/schemas/InclusionBreakdown"
+        withMetadata:
+          type: integer
+          minimum: 0
+        withPdf:
+          type: integer
+          minimum: 0
+        ocr:
+          $ref: "#/components/schemas/OcrBreakdown"
+
+    # --- W1 papers 列表状态字段 ---
+    ProjectPaperItem:
+      type: object
+      required: [paperId, inclusionStatus, hasAbstract, hasPdf, ocrStatus, hasExtraction]
+      properties:
+        paperId:
+          type: integer
+        title:
+          type: string
+          nullable: true
+        year:
+          type: integer
+          nullable: true
+        inclusionStatus:
+          type: string
+          enum: [candidate, included, excluded, maybe]
+        screeningScore:
+          type: integer
+          nullable: true
+        hasAbstract:
+          type: boolean
+        hasPdf:
+          type: boolean
+        ocrStatus:
+          type: string
+          enum: [none, pending, processing, done, failed]
+        hasExtraction:
+          type: boolean
+          description: 是否已有结构化抽取结果（paper_extraction 表中存在对应行）
+
+    # --- P2-T3 from-search 入库 ---
+
+    FromSearchCandidate:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        doi:
+          type: string
+          nullable: true
+          maxLength: 255
+        authors:
+          type: array
+          items:
+            type: string
+          maxItems: 100
+        year:
+          type: integer
+          nullable: true
+          minimum: 1500
+          maximum: 2100
+        abstract:
+          type: string
+          nullable: true
+          maxLength: 20000
+        keywords:
+          type: string
+          nullable: true
+          maxLength: 4000
+        containerTitle:
+          type: string
+          nullable: true
+          maxLength: 1000
+        url:
+          type: string
+          nullable: true
+          maxLength: 2000
+        openalexId:
+          type: string
+          nullable: true
+          maxLength: 64
+        source:
+          type: string
+          nullable: true
+          maxLength: 40
+        provider:
+          type: string
+          nullable: true
+          maxLength: 40
+        sciverseDocId:
+          type: string
+          nullable: true
+          maxLength: 255
+        sciverseUniqueId:
+          type: string
+          nullable: true
+          maxLength: 255
+        references:
+          type: array
+          maxItems: 1000
+          items:
+            type: string
+        externalIds:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: true
+        raw:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+    FromSearchRequest:
+      type: object
+      required: [candidates]
+      properties:
+        candidates:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            $ref: "#/components/schemas/FromSearchCandidate"
+        defaultStatus:
+          type: string
+          enum: [candidate, included]
+
+    FromSearchResult:
+      type: object
+      required: [imported, skipped, failed, paperIds]
+      properties:
+        imported:
+          type: integer
+          minimum: 0
+          description: 本次新导入（首次关联到项目）的文献数
+        skipped:
+          type: integer
+          minimum: 0
+          description: 幂等跳过（paper 已存在于项目）的文献数
+        failed:
+          type: integer
+          minimum: 0
+          description: 处理失败的候选数（单条异常，不影响其他候选）
+        paperIds:
+          type: array
+          items:
+            type: integer
+          description: 所有成功入库的 paper DB id（含 imported + skipped 两类）
+
+    # --- Sciverse API 接入 ---
+
+    SciverseSettingsPayload:
+      type: object
+      additionalProperties: false
+      properties:
+        baseUrl:
+          type: string
+          nullable: true
+          maxLength: 2000
+          description: Sciverse API Base URL；为空时使用服务端 SCIVERSE_BASE_URL。
+
+    SciversePingResult:
+      type: object
+      required: [ok, baseUrl, resultCount]
+      properties:
+        ok:
+          type: boolean
+        baseUrl:
+          type: string
+        resultCount:
+          type: integer
+          minimum: 0
+
+    SciverseMetaSearchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        query:
+          type: string
+          nullable: true
+          maxLength: 4096
+        filters:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: true
+        sort:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            additionalProperties: true
+        fields:
+          type: array
+          maxItems: 80
+          items:
+            type: string
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+          maximum: 100
+        cursor:
+          type: string
+          nullable: true
+          maxLength: 4000
+        freshnessBoost:
+          type: string
+          nullable: true
+          enum: [NONE, MILD, STRONG]
+        baseUrl:
+          type: string
+          nullable: true
+          maxLength: 2000
+
+    SciverseMetaSearchResult:
+      type: object
+      required: [candidates]
+      properties:
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/FromSearchCandidate"
+        totalCount:
+          type: integer
+          nullable: true
+        page:
+          type: integer
+          nullable: true
+        pageSize:
+          type: integer
+          nullable: true
+        totalPages:
+          type: integer
+          nullable: true
+        nextCursor:
+          type: string
+          nullable: true
+        searchTimeMs:
+          type: number
+          nullable: true
+
+    SciverseAgenticSearchRequest:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        topK:
+          type: integer
+          minimum: 1
+          maximum: 100
+        subQueries:
+          type: integer
+          minimum: 0
+          maximum: 10
+        baseUrl:
+          type: string
+          nullable: true
+          maxLength: 2000
+
+    SciverseAgenticHit:
+      type: object
+      properties:
+        chunkId:
+          type: string
+          nullable: true
+        chunk:
+          type: string
+          nullable: true
+        docId:
+          type: string
+          nullable: true
+        title:
+          type: string
+          nullable: true
+        abstract:
+          type: string
+          nullable: true
+        score:
+          type: number
+          nullable: true
+        sourceType:
+          type: string
+          nullable: true
+        offset:
+          type: integer
+          nullable: true
+        pageNo:
+          type: integer
+          nullable: true
+        modelName:
+          type: string
+          nullable: true
+        modelVersion:
+          type: string
+          nullable: true
+        externalIds:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    SciverseAgenticSearchResult:
+      type: object
+      required: [hits]
+      properties:
+        hits:
+          type: array
+          items:
+            $ref: "#/components/schemas/SciverseAgenticHit"
+
+    SciverseFetchContentRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        docId:
+          type: string
+          nullable: true
+          maxLength: 255
+        baseUrl:
+          type: string
+          nullable: true
+          maxLength: 2000
+        maxChars:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 1000000
+
+    SciverseFetchContentResult:
+      type: object
+      required: [paperId, docId, attachmentId, chars, sha256]
+      properties:
+        paperId:
+          type: integer
+        docId:
+          type: string
+        attachmentId:
+          type: integer
+        chars:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+
+    # --- P3-T1 元数据补全 ---
+
+    BackfillMetadataRequest:
+      type: object
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: 最多处理的文献数（保配额）
+        onlyMissing:
+          type: boolean
+          description: True=仅处理缺 abstract 或 creators 的篇；False=全量
+
+    BackfillMetadataResult:
+      type: object
+      required: [processed, updated, skipped, failed, available]
+      properties:
+        processed:
+          type: integer
+          minimum: 0
+          description: 本次处理的文献总数
+        updated:
+          type: integer
+          minimum: 0
+          description: 成功回填（至少一个字段更新）的文献数
+        skipped:
+          type: integer
+          minimum: 0
+          description: 跳过（无 markdown/已完整/LLM 未给出新字段）的文献数
+        failed:
+          type: integer
+          minimum: 0
+          description: 处理失败（LLM 错误/JSON 解析失败/DB 错误）的文献数
+        available:
+          type: integer
+          minimum: 0
+          description: 处理后仍待处理的篇数（剩余）：满足 onlyMissing 条件、尚未回填的文献数，不受 limit 截断
+
+    # --- P3-T3 结构化抽取 ---
+
+    PaperExtractionDto:
+      type: object
+      properties:
+        researchQuestion:
+          type: string
+          nullable: true
+          description: 核心研究问题或研究目标
+        method:
+          type: string
+          nullable: true
+          description: 研究方法或技术路线
+        findings:
+          type: string
+          nullable: true
+          description: 主要研究发现或结论
+        dataset:
+          type: string
+          nullable: true
+          description: 使用的数据集或数据来源
+        contribution:
+          type: string
+          nullable: true
+          description: 主要学术贡献或创新点
+
+    ExtractStructuredRequest:
+      type: object
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: 最多处理的文献数（保配额）
+        reextract:
+          type: boolean
+          description: True=强制重新抽取（覆盖已有 extraction）；False=跳过已有
+
+    ExtractStructuredResult:
+      type: object
+      required: [processed, extracted, skipped, failed, available]
+      properties:
+        processed:
+          type: integer
+          minimum: 0
+          description: 本次处理的文献总数
+        extracted:
+          type: integer
+          minimum: 0
+          description: 成功抽取（新建或更新）的文献数
+        skipped:
+          type: integer
+          minimum: 0
+          description: 跳过（无 markdown/已有 extraction 且未强制重提取）的文献数
+        failed:
+          type: integer
+          minimum: 0
+          description: 处理失败（LLM 错误/JSON 解析失败/DB 错误）的文献数
+        available:
+          type: integer
+          minimum: 0
+          description: 处理后仍待处理的篇数（剩余）：OCR done 且尚无 extraction 的文献数，reextract=true 时为 OCR done 总数，不受 limit 截断
+
+    # --- P3 单篇文献详情（含 extraction，消除手写漂移）---
+
+    PaperDetail:
+      type: object
+      description: >
+        单篇文献详情，以 services/agent/app/schemas.py 的 PaperDetail Pydantic 模型为准。
+        extraction 字段为可选，无 paper_extraction 记录时为 null。
+      required: [paperId, inclusionStatus]
+      properties:
+        paperId:
+          type: integer
+          description: 文献 DB 主键
+        title:
+          type: string
+          nullable: true
+          description: 文献标题
+        creators:
+          type: array
+          items: {}
+          description: 作者列表（CSL-JSON 格式，元素可为字符串或含 family/given/literal 的对象）
+        doi:
+          type: string
+          nullable: true
+          description: DOI 标识符
+        abstract:
+          type: string
+          nullable: true
+          description: 摘要正文
+        tags:
+          type: array
+          items:
+            type: string
+          description: 用户标签列表
+        notes:
+          type: array
+          items: {}
+          description: 用户笔记列表
+        inclusionStatus:
+          type: string
+          enum: [candidate, included, excluded, maybe]
+          description: 纳排状态
+        extraction:
+          oneOf:
+            - $ref: "#/components/schemas/PaperExtractionDto"
+            - type: "null"
+          description: LLM 结构化抽取结果；无抽取记录时为 null
+
+    # ============================================================
+    # 研究副驾 · GAP / 证据包 / 价值裁决 schema（字段级冻结）
+    # 可空性硬约束：value_verdict|null、year|null、doi|null、score|null、source_view|null。
+    # 铁律：value_verdict 由确定性 resolver 出（decided_by=deterministic）；
+    #       EvidencePack.gathered_by 恒为 subagent（工具只攒证不裁决）。
+    # ============================================================
+
+    GapLens:
+      type: string
+      description: GAP 透镜（概念/方法/理论；领域无关）
+      enum: [concept, method, theory]
+
+    GapStatus:
+      type: string
+      description: GAP 生命周期（HITL 流转 draft→verified→accepted/rejected）
+      enum: [draft, verified, accepted, rejected]
+
+    GapSupportingPaper:
+      type: object
+      description: 支撑该 GAP 的论文证据（带源坐标 anchor_id，可经 EvidenceResolver 回定位原文块）
+      required: [paper_id, anchor_id, quote]
+      properties:
+        paper_id:
+          type: integer
+          description: 语料论文 DB 主键
+        anchor_id:
+          type: string
+          description: 源坐标锚点 id
+        quote:
+          type: string
+          description: 逐字保留的支撑引文（绝不顺手纠正）
+
+    GapCounterEvidence:
+      type: object
+      description: 反证/张力证据（与 GAP 论断相左的发现）
+      required: [paper_id, anchor_id, note]
+      properties:
+        paper_id:
+          type: integer
+        anchor_id:
+          type: string
+        note:
+          type: string
+          description: 反证说明
+
+    ValueThresholds:
+      type: object
+      description: 透明阈值（反「LLM 拍脑袋」：裁决依据可见、可配、可按领域传参）
+      required: [reverse_hit_high, reverse_hit_low]
+      properties:
+        reverse_hit_high:
+          type: integer
+          description: 默认 25；hit_count ≥ 此值判 likely_filled（伪空白）
+        reverse_hit_low:
+          type: integer
+          description: 默认 3；hit_count ≤ 此值反向支持真空白
+
+    ValueVerdict:
+      type: object
+      description: >
+        研究方向价值裁决。由确定性 resolver 出，decided_by 恒为 deterministic；
+        LLM 只产 statement + 攒 EvidencePack，绝不出 verdict。
+      required: [gap_id, verdict, score, thresholds, rationale, decided_by]
+      properties:
+        gap_id:
+          type: string
+        verdict:
+          type: string
+          enum: [valuable, likely_filled, inconclusive]
+        score:
+          type: number
+          nullable: true
+          description: 量化分（可空：inconclusive 时可为 null）
+        thresholds:
+          $ref: "#/components/schemas/ValueThresholds"
+        rationale:
+          type: string
+          description: 确定性规则的可读解释
+        decided_by:
+          type: string
+          enum: [deterministic]
+          description: 恒为 deterministic（铁律：裁决由确定性代码出，非 LLM）
+
+    GapCandidate:
+      type: object
+      description: >
+        结构化 GAP 候选（scratchpad 条目）。confidence 为 LLM 自评仅供排序、非裁决依据；
+        value_verdict 由确定性 resolver 出，未核验时为 null。
+      required:
+        [gap_id, theme, statement, lens, supporting_papers, counter_evidence, confidence, status, value_verdict]
+      properties:
+        gap_id:
+          type: string
+        theme:
+          type: string
+          description: 所属主题簇
+        statement:
+          type: string
+          description: GAP 论断（如「X 与 Y 的关系在 Z 情境下未被研究」）
+        lens:
+          $ref: "#/components/schemas/GapLens"
+        supporting_papers:
+          type: array
+          items:
+            $ref: "#/components/schemas/GapSupportingPaper"
+        counter_evidence:
+          type: array
+          items:
+            $ref: "#/components/schemas/GapCounterEvidence"
+        confidence:
+          type: number
+          description: LLM 自评（0-1，仅供排序，非裁决依据）
+        status:
+          $ref: "#/components/schemas/GapStatus"
+        value_verdict:
+          description: 价值裁决；未核验时为 null
+          oneOf:
+            - $ref: "#/components/schemas/ValueVerdict"
+            - type: "null"
+
+    ReverseSearchHit:
+      type: object
+      description: 反向检索命中条目（证伪：已有研究是否已填补该空白）
+      required: [title, year, doi, relevance]
+      properties:
+        title:
+          type: string
+        year:
+          type: integer
+          nullable: true
+          description: 出版年（可空）
+        doi:
+          type: string
+          nullable: true
+          description: DOI（可空）
+        relevance:
+          type: number
+          description: 与 GAP 论断的相关度（0-1）
+
+    ReverseSearch:
+      type: object
+      description: 反向检索证据（statement→query→Sciverse/OpenAlex 命中计数，去重后）
+      required: [query, provider, hit_count, top_hits]
+      properties:
+        query:
+          type: string
+        provider:
+          type: string
+          enum: [sciverse, openalex]
+        hit_count:
+          type: integer
+          description: 近 N 年强相关计数（去重后，防同一文献多源重复计数虚高）
+        top_hits:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReverseSearchHit"
+
+    BiblioStructure:
+      type: object
+      description: 计量结构佐证（取自现有 R bibliometric 网络数据，不重算）
+      required: [metric, value, interpretation, source_view]
+      properties:
+        metric:
+          type: string
+          enum: [cooccurrence_gap, low_coupling]
+        value:
+          type: number
+        interpretation:
+          type: string
+          description: 确定性可读解释（如「两核心概念间存在共现断层」）
+        source_view:
+          type: string
+          nullable: true
+          description: 取自哪个分析视图（如 conceptual），可空
+
+    EvidencePackSkipped:
+      type: object
+      description: fail-loud：跳过项显式表达（绝不静默成功空结果）
+      required: [reason]
+      properties:
+        reason:
+          type: string
+
+    EvidencePack:
+      type: object
+      description: >
+        价值核验 subagent 攒的证据包（工具只规整结构、不算术、不裁决）。
+        gathered_by 恒为 subagent。
+      required: [gap_id, reverse_search, biblio_structure, gathered_by, skipped]
+      properties:
+        gap_id:
+          type: string
+        reverse_search:
+          $ref: "#/components/schemas/ReverseSearch"
+        biblio_structure:
+          $ref: "#/components/schemas/BiblioStructure"
+        gathered_by:
+          type: string
+          enum: [subagent]
+        skipped:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvidencePackSkipped"
+
+    GapVerdictResult:
+      type: object
+      description: >
+        GET .../verdict 返回体：价值裁决 + 攒证的证据包（§2.1「裁决 + 证据包」）。
+      required: [gap_id, verdict, evidence]
+      properties:
+        gap_id:
+          type: string
+        verdict:
+          $ref: "#/components/schemas/ValueVerdict"
+        evidence:
+          $ref: "#/components/schemas/EvidencePack"
+
+    ScratchpadState:
+      type: object
+      description: 本 run 实时工作记忆快照（类 harness 工作笔记；HITL 轮询视图）
+      required: [run_id, run_status, entries, updated_at]
+      properties:
+        run_id:
+          type: string
+        run_status:
+          type: string
+          enum: [running, completed, failed]
+          description: >
+            本 run 生命周期（轮询停止信号，codex B1-P1）。running 时前端持续轮询；
+            completed/failed 时前端停轮询。fail-loud：失败显式 failed，绝不静默成 completed。
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/GapCandidate"
+        updated_at:
+          type: string
+          description: ISO8601 更新时间
+
+    GapDiscoverAccepted:
+      type: object
+      description: ":discover 202 受理体"
+      required: [run_id]
+      properties:
+        run_id:
+          type: string
+
+    GapVerifyAccepted:
+      type: object
+      description: ":verify 202 受理体"
+      required: [verify_run_id]
+      properties:
+        verify_run_id:
+          type: string
+
+    GapAcceptReject:
+      type: object
+      description: HITL accept/reject（改 status，不带 statement）
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [accept, reject]
+    GapRevise:
+      type: object
+      description: HITL revise（必带非空 statement，回写论断并置回 draft 以便重核）
+      required: [action, statement]
+      properties:
+        action:
+          type: string
+          enum: [revise]
+        statement:
+          type: string
+          minLength: 1
+          description: 改写后的新论断（revise 必填非空）
+    GapPatchRequest:
+      description: >
+        HITL 决策请求（codex B1-P2：用 oneOf 在契约层锁死「revise 必带 statement」）。
+        accept/reject 不带 statement；revise 必带非空 statement。
+      oneOf:
+        - $ref: "#/components/schemas/GapAcceptReject"
+        - $ref: "#/components/schemas/GapRevise"

@@ -1,0 +1,107 @@
+---
+title: "`r params$meta$title %||% 'BiblioCN 文献综述报告'`"
+author: "`r params$meta$author %||% 'BiblioCN'`"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+params:
+  corpus: NULL
+  sections: !r list(prisma = TRUE, overview = TRUE, ai_review = TRUE, references = TRUE, appendix = TRUE)
+  ai_chapters: !r list()
+  prisma: NULL
+  meta: !r list()
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.width = 8, fig.height = 6, dpi = 150)
+`%||%` <- function(a, b) if (is.null(a) || length(a) == 0L) b else a
+M   <- params$corpus
+sec <- params$sections
+```
+
+```{r meta-summary}
+n_docs <- tryCatch(nrow(M), error = function(e) 0L)
+n_au   <- tryCatch(length(unique(unlist(strsplit(paste(M$AU, collapse = ";"), ";")))),
+                   error = function(e) NA_integer_)
+yr_rng <- tryCatch({
+  py <- suppressWarnings(as.integer(M$PY)); py <- py[!is.na(py)]
+  if (length(py)) sprintf("%d–%d", min(py), max(py)) else "—"
+}, error = function(e) "—")
+src    <- tryCatch(length(unique(M$SO[nzchar(M$SO %||% "")])), error = function(e) NA_integer_)
+```
+
+> **语料概要**：共 **`r n_docs`** 篇文献，**`r n_au`** 位作者，**`r src`** 个来源，年份跨度 **`r yr_rng`**。
+> 报告生成时间：`r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`。
+
+```{r prisma, eval = isTRUE(sec$prisma) && !is.null(params$prisma), results='asis'}
+cat("\n## 文献筛选流程 (PRISMA 2020)\n\n")
+```
+
+```{r prisma-plot, eval = isTRUE(sec$prisma) && !is.null(params$prisma), fig.width=8, fig.height=7}
+if (exists("prisma_flow_plot")) {
+  print(prisma_flow_plot(params$prisma$counts %||% list(),
+                         reasons = params$prisma$reasons %||% ""))
+}
+```
+
+```{r overview, eval = isTRUE(sec$overview) && n_docs > 0, results='asis'}
+cat("\n## 文献计量概览\n\n")
+ov <- tryCatch(analyze_overview(M), error = function(e) NULL)
+if (!is.null(ov)) {
+  ap <- ov$annual_production
+  if (!is.null(ap) && nrow(ap)) {
+    cat("\n**年度产出趋势**\n\n")
+  }
+}
+```
+
+```{r overview-plot, eval = isTRUE(sec$overview) && n_docs > 0, fig.width=8, fig.height=4}
+ov <- tryCatch(analyze_overview(M), error = function(e) NULL)
+if (!is.null(ov) && !is.null(ov$annual_production) && nrow(ov$annual_production)) {
+  ap <- ov$annual_production
+  print(
+    ggplot2::ggplot(ap, ggplot2::aes(x = year, y = articles)) +
+      ggplot2::geom_line(color = "#3c8dbc") +
+      ggplot2::geom_point(color = "#3c8dbc") +
+      ggplot2::labs(x = "年份", y = "文献数量", title = "年度产出趋势") +
+      ggplot2::theme_minimal()
+  )
+}
+```
+
+```{r ai-review, eval = isTRUE(sec$ai_review) && length(params$ai_chapters) > 0, results='asis'}
+cat("\n## AI 综述初稿\n\n")
+cat("> 注：以下内容由 AI 基于语料生成，引用与事实请自行核实（见文末引用校验说明）。\n\n")
+for (title in names(params$ai_chapters)) {
+  cat(sprintf("\n### %s\n\n", title))
+  cat(params$ai_chapters[[title]] %||% "")
+  cat("\n\n")
+}
+```
+
+```{r references, eval = isTRUE(sec$references) && n_docs > 0, results='asis'}
+cat("\n## 参考文献 (语料前 50 篇)\n\n")
+ord <- tryCatch(order(suppressWarnings(as.numeric(M$TC)), decreasing = TRUE),
+                error = function(e) seq_len(n_docs))
+idx <- utils::head(ord, 50L)
+for (i in idx) {
+  au <- M$AU[i] %||% ""; ti <- M$TI[i] %||% ""; py <- M$PY[i] %||% ""
+  so <- M$SO[i] %||% ""; di <- M$DI[i] %||% ""
+  ref <- sprintf("%s (%s). %s. *%s*.", au, py, ti, so)
+  if (nzchar(di)) ref <- paste0(ref, sprintf(" https://doi.org/%s", di))
+  cat(sprintf("%d. %s\n\n", which(idx == i), ref))
+}
+```
+
+```{r appendix, eval = isTRUE(sec$appendix), results='asis'}
+cat("\n## 附录：可复现信息\n\n")
+cat("| 项 | 值 |\n|---|---|\n")
+cat(sprintf("| 文献数 | %d |\n", n_docs))
+cat(sprintf("| 字段 | %s |\n", paste(utils::head(names(M), 30), collapse = ", ")))
+cat(sprintf("| 来源数 | %s |\n", src))
+cat(sprintf("| 年份跨度 | %s |\n", yr_rng))
+cat(sprintf("| 报告生成时间 | %s |\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
+cat(sprintf("| 模型 | %s |\n", params$meta$model %||% "—"))
+cat(sprintf("| BiblioCN 版本 | %s |\n", params$meta$version %||% "v0.6"))
+cat("\n_本报告由 BiblioCN 生成，文献计量功能由 bibliometrix 提供。_\n")
+```

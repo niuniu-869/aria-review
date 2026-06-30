@@ -1,0 +1,46 @@
+default:
+  llm:
+    default_provider: "deepseek"
+    providers:
+      deepseek:
+        base_url_env: "DEEPSEEK_BASE_URL"
+        api_key_env:  "DEEPSEEK_API_KEY"
+        models:
+          - "deepseek-v4-flash"
+          - "deepseek-v4-pro"
+        default_model: "deepseek-v4-flash"
+        # 价目表三档 (CNY / 百万 token, 2026-05-20 从官网拉取)
+        # deepseek-chat = v4-flash 非思考; deepseek-reasoner = v4-flash 思考 (兼容别名)
+        pricing:
+          deepseek-v4-flash:
+            input_cache_hit:  0.02
+            input_cache_miss: 1.00
+            output:           2.00
+            currency:        "CNY"
+            effective_until:  ~        # 长期价
+          deepseek-chat:               # = v4-flash 非思考
+            input_cache_hit:  0.02
+            input_cache_miss: 1.00
+            output:           2.00
+            currency:        "CNY"
+            effective_until:  ~
+          deepseek-reasoner:           # = v4-flash 思考 (同价, 但 output tokens 含 thinking)
+            input_cache_hit:  0.02
+            input_cache_miss: 1.00
+            output:           2.00
+            currency:        "CNY"
+            effective_until:  ~
+          deepseek-v4-pro:
+            # 2.5 折优惠至 2026-05-31 23:59 (北京时间); 过期后回退到 list_price
+            input_cache_hit:  0.025
+            input_cache_miss: 3.00
+            output:           6.00
+            currency:        "CNY"
+            effective_until: "2026-05-31T23:59:00+08:00"
+            list_price:
+              input_cache_hit:  0.10
+              input_cache_miss: 12.00
+              output:           24.00
+  pdf:
+    lit_pipeline_path: "/srv/shared/lit_pipeline.py"
+    python_bin: "python3"

@@ -1,0 +1,12 @@
+# testthat 自动加载; 工作目录在运行时为 tests/testthat
+library(bibliometrix)
+library(jsonlite)
+source(file.path("..", "..", "R", "analysis.R"))
+source(file.path("..", "..", "R", "store.R"))
+source(file.path("..", "..", "R", "analysis_pages.R"))
+source(file.path("..", "..", "R", "analysis_advanced.R"))
+source(file.path("..", "..", "R", "analysis_advanced2.R"))
+source(file.path("..", "..", "R", "analysis_networks.R"))
+source(file.path("..", "..", "R", "cite.R"))
+source(file.path("..", "..", "R", "ingest_openalex.R"))
+source(file.path("..", "..", "R", "ingest_records.R"))

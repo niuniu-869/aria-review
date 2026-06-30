@@ -1,0 +1,293 @@
+/* biblio.css — BiblioCN 全站样式补丁
+ *
+ * 加载: app.R 中 dashboardBody(tags$head(tags$link(rel='stylesheet', href='biblio.css')), ...)
+ * 范围: design-review P0-P3 修复涉及的所有 CSS 改动统一在此
+ */
+
+/* ── FINDING-001: 中文字体优先栈 ─────────────────────────
+ * 覆盖 bs4Dash 默认 Source Sans Pro 栈. Latin 字仍走 Source Sans Pro/system,
+ * 中文走 PingFang/微软雅黑/Noto CJK, 避免容器内回退靠运气.
+ */
+:root {
+  --biblio-font-sans: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB",
+                      "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei",
+                      "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI",
+                      Roboto, "Helvetica Neue", Arial, sans-serif;
+  --biblio-font-mono: SFMono-Regular, Menlo, Monaco, Consolas,
+                      "Liberation Mono", "Courier New", monospace;
+}
+
+html, body,
+.content-wrapper, .main-sidebar, .main-header,
+.card, .card-header, .card-body, .card-title,
+.nav, .nav-link, .btn, .form-control, .form-label, .form-select,
+.dataTables_wrapper, table.dataTable,
+h1, h2, h3, h4, h5, h6, p, span, div, label, a {
+  font-family: var(--biblio-font-sans);
+}
+
+code, pre, kbd, samp, .verbatim,
+.shiny-text-output[id$="config"], .shiny-text-output.code {
+  font-family: var(--biblio-font-mono);
+}
+
+/* ── FINDING-006: 卡片头淡化 ──────────────────────────
+ * analysis_card() 改为 solidHeader=FALSE 后, bs4Dash 渲染为 .card-primary
+ * .card-outline (outline 是默认非 solid 时的呈现). 收敛为白底 + 左侧 3px 主
+ * 色窄条, 形成视觉层级:
+ *   - 主要焦点 = body 内容 (字大、颜色饱和)
+ *   - card header = 标识 (字中、颜色克制)
+ *   - CTA 按钮 = 主蓝色 (最强 affordance)
+ * .analysis-card 限定使本规则只对 analysis_card() 渲染的卡片生效,
+ * 不影响未来直接调 bs4Dash::box(status='primary') 的其他用法.
+ */
+.card.analysis-card.card-primary > .card-header {
+  background-color: #ffffff;
+  color: #212529;
+  border-bottom: 1px solid #e9ecef;
+  border-left: 3px solid #007bff;
+}
+.card.analysis-card.card-primary > .card-header .card-title,
+.card.analysis-card.card-primary > .card-header h3 {
+  color: #212529;
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+.card.analysis-card.card-primary > .card-header .card-tools .btn-tool {
+  color: #6c757d;
+}
+.card.analysis-card.card-primary > .card-header .card-tools .btn-tool:hover {
+  color: #212529;
+}
+
+/* ── FINDING-003: page header + heading scale ────────────
+ * 原先全站 42 个 H3 同字号 (17.6px), 无 H1/H2, 切换 tab 后视觉无锚定.
+ * 注入 page_header() 后形成: H1 (页标题 24px) > card 头 (15px) > body.
+ */
+.biblio-page-header {
+  margin: 4px 0 20px 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e9ecef;
+}
+.biblio-page-title {
+  font-size: 24px;
+  font-weight: 600;
+  color: #212529;
+  margin: 0 0 4px 0;
+  line-height: 1.3;
+}
+.biblio-page-subtitle {
+  font-size: 14px;
+  color: #6c757d;
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ── FINDING-008/011: 顶栏控件触控目标 + hover affordance ─
+ * 原先顶栏右上 hamburger / 暗模式开关 / ? / 齿轮都是 31×31, 小于 44px
+ * 触控最低标准. hover 也无 affordance, 用户不知道可点.
+ */
+.main-header .nav-link {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 120ms ease-out;
+}
+.main-header .nav-link:hover,
+.main-header .nav-link:focus-visible {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+.main-header.navbar-dark .nav-link:hover,
+.main-header.navbar-dark .nav-link:focus-visible {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* ── FINDING-012: sidebar 链接高度 ─────────────────────
+ * 原先 sidebar 链接 234×40, 高度 40 略低于 44 触控最低. 加 padding 抬高.
+ */
+.main-sidebar .nav-sidebar .nav-link {
+  min-height: 44px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  display: flex;
+  align-items: center;
+}
+.main-sidebar .nav-sidebar .nav-treeview .nav-link {
+  min-height: 40px; /* 子菜单略低于父菜单, 形成视觉层级 */
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+/* ── FINDING-015: sidebar 顶部过滤输入框 ─────────────
+ * 跨 17 个 tab 时, 输入关键字直接隐藏不匹配项, Esc 复原.
+ * BiblioCN 默认 light skin (sidebar 白底), 输入框用浅灰底 + 深色字.
+ */
+.biblio-sidebar-search {
+  padding: 12px 12px 0 12px;
+}
+.biblio-sidebar-search .form-control {
+  background-color: #f8f9fa;
+  color: #212529;
+  border: 1px solid #ced4da;
+}
+.biblio-sidebar-search .form-control::placeholder {
+  color: #adb5bd;
+}
+.biblio-sidebar-search .form-control:focus {
+  background-color: #ffffff;
+  border-color: #86b7fe;
+  box-shadow: 0 0 0 0.15rem rgba(13, 110, 253, 0.25);
+  color: #212529;
+}
+
+/* ── FINDING-010: AI Chat 空状态容器 ──────────────────
+ * 用户首次进入对话页面时, 需要一个视觉容器告诉他"对话会在这里展开",
+ * 而不是只有一行小灰字 + 输入框. 虚线边框 + icon + 双行文案构成
+ * 标准 empty state 模式.
+ */
+.biblio-chat-empty {
+  text-align: center;
+  padding: 48px 20px;
+  margin: 8px 0 16px 0;
+  border: 1px dashed #ced4da;
+  border-radius: 8px;
+  background: #fafbfc;
+  color: #6c757d;
+}
+.biblio-chat-empty-icon {
+  font-size: 36px;
+  color: #adb5bd;
+  margin-bottom: 12px;
+}
+.biblio-chat-empty p {
+  margin: 0;
+  font-size: 15px;
+  color: #495057;
+}
+.biblio-chat-empty .biblio-chat-empty-hint {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #868e96;
+}
+
+/* ── Welcome 页 (新人零门槛入口) ─────────────────────────
+ * Hero 标题大字号 + 副标语低权重灰色, 让用户在最上方 3 秒内就看到
+ * 产品定位; 与下面 4 张入口卡片形成 H1 → 卡片标题 → 卡片描述的层级.
+ */
+.biblio-welcome-hero {
+  padding: 20px 4px 24px 4px;
+  margin-bottom: 8px;
+}
+.biblio-welcome-hero h1 {
+  font-size: 28px;
+  font-weight: 700;
+  color: #212529;
+  margin: 0 0 8px 0;
+}
+.biblio-welcome-tagline {
+  font-size: 15px;
+  color: #6c757d;
+  line-height: 1.6;
+  margin: 0;
+}
+.biblio-welcome-tagline strong {
+  color: #007bff;
+  font-weight: 600;
+}
+
+/* ── I1 (spec §1): 统一 markdown 渲染样式 ─────────────────────────────
+ * 所有 LLM 输出走 fct_markdown.R::render_markdown_safe, 包一层 .biblio-md.
+ * 这里控制字号 / 间距 / 代码块 / 表格视觉, 与全站设计语言对齐.
+ */
+.biblio-md {
+  font-family: var(--biblio-font-sans);
+  line-height: 1.7;
+  color: #2c3338;
+  font-size: 14px;
+}
+.biblio-md h1, .biblio-md h2, .biblio-md h3,
+.biblio-md h4, .biblio-md h5, .biblio-md h6 {
+  margin: 1em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #212529;
+}
+.biblio-md h1 { font-size: 1.5em; border-bottom: 1px solid #e9ecef; padding-bottom: 0.2em; }
+.biblio-md h2 { font-size: 1.3em; border-bottom: 1px solid #f0f1f3; padding-bottom: 0.15em; }
+.biblio-md h3 { font-size: 1.15em; }
+.biblio-md h4 { font-size: 1.05em; }
+.biblio-md p  { margin: 0.6em 0; }
+.biblio-md ul, .biblio-md ol { padding-left: 1.4em; margin: 0.5em 0; }
+.biblio-md li { margin: 0.2em 0; }
+.biblio-md blockquote {
+  margin: 0.7em 0;
+  padding: 0.5em 1em;
+  border-left: 3px solid #b3d4fc;
+  background: #f7fafe;
+  color: #495057;
+}
+.biblio-md code {
+  background: #f4f5f7;
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  font-size: 0.92em;
+  font-family: "Source Code Pro", "JetBrains Mono", Menlo, Consolas, monospace;
+  color: #c0392b;
+}
+.biblio-md pre {
+  background: #f8f9fa;
+  padding: 0.85em 1em;
+  border-radius: 4px;
+  overflow-x: auto;
+  line-height: 1.5;
+  font-size: 0.9em;
+}
+.biblio-md pre code {
+  background: transparent;
+  padding: 0;
+  color: #2c3338;
+  font-size: 1em;
+}
+.biblio-md table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  width: auto;
+  max-width: 100%;
+  font-size: 0.95em;
+}
+.biblio-md th, .biblio-md td {
+  border: 1px solid #e1e4e8;
+  padding: 0.45em 0.85em;
+  text-align: left;
+}
+.biblio-md th {
+  background: #f6f8fa;
+  font-weight: 600;
+}
+.biblio-md hr {
+  border: none;
+  border-top: 1px solid #e9ecef;
+  margin: 1.2em 0;
+}
+.biblio-md a {
+  color: #1e88e5;
+  text-decoration: none;
+  border-bottom: 1px dashed rgba(30, 136, 229, 0.3);
+}
+.biblio-md a:hover {
+  border-bottom-style: solid;
+}
+.biblio-md-fallback {
+  /* commonmark 解析失败时的兜底 <pre> */
+  background: #fffbe6;
+  border-left: 3px solid #ffc107;
+  padding: 0.6em 0.9em;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: "Source Code Pro", monospace;
+  font-size: 0.92em;
+  color: #5a4500;
+}

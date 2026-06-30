@@ -1,0 +1,12 @@
+title = "BiblioCN gitleaks configuration"
+
+[allowlist]
+description = "Allow deterministic test placeholders and documentation-only fake keys."
+regexes = [
+  '''s[k]-test[A-Za-z0-9_-]*''',
+  '''s[k]-env[A-Za-z0-9_-]*''',
+  '''your_[a-z_]+_key_here''',
+]
+paths = [
+  '''apps/web/pnpm-lock.yaml''',
+]
