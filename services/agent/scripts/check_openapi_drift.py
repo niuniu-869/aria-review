@@ -49,17 +49,35 @@ def load_contract(path: Path) -> set[tuple[str, str]]:
     return routes
 
 
+def _iter_terminal_routes(routes: Iterable[object]) -> Iterable[object]:
+    """展平路由树：新版 FastAPI (>=0.139) 的 include_router() 把子路由包成不透明的
+    `_IncludedRouter`（无自身 .path/.methods），必须递归展开其 .original_router.routes
+    /.routes 才能拿到真正的 APIRoute；否则整个子路由器会被静默漏检（无异常/无告警，
+    CI 误报"路由缺失"——曾在 fastapi 0.139.0 + starlette 1.3.1 复现）。
+    """
+    for route in routes:
+        methods = getattr(route, "methods", None)
+        path = getattr(route, "path", None)
+        if methods and path:
+            yield route
+            continue
+        nested = getattr(route, "routes", None)
+        if nested is None:
+            original_router = getattr(route, "original_router", None)
+            nested = getattr(original_router, "routes", None)
+        if nested:
+            yield from _iter_terminal_routes(nested)
+
+
 def load_app_routes() -> set[tuple[str, str]]:
     agent_root = repo_root() / "services" / "agent"
     sys.path.insert(0, str(agent_root))
     from app.main import app  # pylint: disable=import-outside-toplevel
 
     routes: set[tuple[str, str]] = set()
-    for route in app.routes:
-        methods: Iterable[str] | None = getattr(route, "methods", None)
-        path = getattr(route, "path", None)
-        if not methods or not path:
-            continue
+    for route in _iter_terminal_routes(app.routes):
+        methods: Iterable[str] = getattr(route, "methods")
+        path: str = getattr(route, "path")
         for method in methods:
             upper = method.upper()
             if upper not in IGNORED_METHODS:

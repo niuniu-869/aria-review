@@ -16,7 +16,9 @@ jobs:
       - name: Install agent dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r services/agent/requirements.txt pyyaml
+          # 用 requirements.lock（复现基线，含 pyyaml）而非 requirements.txt（无上界）安装，
+          # 避免 CI 解析到比本地 .venv 更新的 fastapi/starlette 版本触发路由内省不兼容。
+          python -m pip install -r services/agent/requirements.lock
       - name: Check OpenAPI drift
         working-directory: services/agent
         run: python scripts/check_openapi_drift.py
