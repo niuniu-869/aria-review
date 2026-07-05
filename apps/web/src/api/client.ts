@@ -969,6 +969,10 @@ export interface SearchCandidate {
   provider?: string | null;
   sciverseDocId?: string | null;
   sciverseUniqueId?: string | null;
+  // 多源检索（search__multi）增量字段：OA 直链 / OA 状态 / 跨源合并涉及的源列表。
+  pdfUrl?: string | null;
+  oaStatus?: string | null;
+  mergedSources?: string[] | null;
   references?: string[];
   externalIds?: Record<string, unknown>[];
   raw?: Record<string, unknown> | null;

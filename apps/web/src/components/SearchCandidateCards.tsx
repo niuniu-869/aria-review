@@ -12,6 +12,31 @@ import type { FromSearchResult, SearchCandidate } from "../api/client";
 import { useAddFromSearch, useBackfillFulltext } from "../api/agentHooks";
 import { useSciverseSettings } from "../api/useSciverseSettings";
 
+// 数据源 → 展示名。多源检索接入后，来源不再只有 openalex/sciverse；旧代码把非 sciverse
+// 一律标 "OpenAlex" 会误标 core/europepmc/crossref 等（QA 实测 185/200 篇标错）。
+const SOURCE_LABELS: Record<string, string> = {
+  sciverse: "Sciverse",
+  openalex: "OpenAlex",
+  core: "CORE",
+  europepmc: "EuropePMC",
+  crossref: "Crossref",
+  semantic: "Semantic Scholar",
+  hal: "HAL",
+  base: "BASE",
+  unpaywall: "Unpaywall",
+  upload: "上传",
+};
+
+function sourceLabel(c: SearchCandidate): string {
+  // 跨源合并的候选优先显示所有涉及源（如 "CORE+OpenAlex"），如实反映多源来源。
+  const merged = (c.mergedSources ?? []).filter(Boolean);
+  if (merged.length > 1) {
+    return merged.map((s) => SOURCE_LABELS[s] ?? s).join("+");
+  }
+  const key = (c.source || c.provider || "").toLowerCase();
+  return SOURCE_LABELS[key] ?? (c.source || c.provider || "未知来源");
+}
+
 interface Props {
   projectId: number;
   candidates: SearchCandidate[];
@@ -234,6 +259,7 @@ export function SearchCandidateCards({
         {candidates.map((c) => {
           const isChecked = selected.has(c.candidate_id);
           const hasSciverseFulltext = !!c.sciverseDocId?.trim();
+          const hasOaPdf = !!c.pdfUrl?.trim();
           const authorStr =
             c.authors && c.authors.length > 0
               ? c.authors.slice(0, 3).join("，") + (c.authors.length > 3 ? " 等" : "")
@@ -278,16 +304,22 @@ export function SearchCandidateCards({
                 </div>
 
                 <div className="candidate-badges">
-                  {c.source && (
+                  {(c.source || c.provider) && (
                     <span className="badge badge-soft candidate-source-badge">
-                      {c.provider === "sciverse" || c.source === "sciverse" ? "Sciverse" : "OpenAlex"}
+                      {sourceLabel(c)}
                     </span>
                   )}
                   <span
-                    className={`badge badge-soft candidate-fulltext-badge${hasSciverseFulltext ? " is-fulltext" : ""}`}
-                    title={hasSciverseFulltext ? "Sciverse 返回 doc_id，可拉取全文" : "仅题录元数据，无法直接用于研究空白精读"}
+                    className={`badge badge-soft candidate-fulltext-badge${hasSciverseFulltext || hasOaPdf ? " is-fulltext" : ""}`}
+                    title={
+                      hasSciverseFulltext
+                        ? "Sciverse 返回 doc_id，可拉取全文"
+                        : hasOaPdf
+                          ? "开放获取(OA) PDF 直链，导入后可安全下载解析全文"
+                          : "仅题录元数据，无法直接用于研究空白精读"
+                    }
                   >
-                    {hasSciverseFulltext ? "含全文" : "仅题录"}
+                    {hasSciverseFulltext ? "含全文" : hasOaPdf ? "开放获取PDF" : "仅题录"}
                   </span>
                   {c.citedByCount != null && c.citedByCount > 0 && (
                     <span

@@ -1,0 +1,23 @@
+# NOTICE
+
+Aria Review (工程代号 BiblioCN) — MIT License, Copyright (c) 2026 BiblioCN Contributors.
+
+## Third-party acknowledgements
+
+### 多源学术检索 (Multi-source academic retrieval)
+
+The multi-source retrieval engine (`services/agent/app/sources/`) was designed and
+built with reference to the **Frontier Review / 研域前沿综述** project by
+**violetreay** (LINUX DO community), which pioneered the multi-source academic
+search workflow (CORE / OpenAlex / EuropePMC / Crossref / Unpaywall / Semantic
+Scholar / HAL / BASE fan-out) that inspired this integration.
+
+violetreay is a contributor to this project; the multi-source retrieval capability
+is contributed to Aria Review as "multi-source information collection" under the
+project's MIT license.
+
+Aria Review's implementation is an independent (clean-room) rewrite driven by the
+public API documentation of each upstream source plus empirically verified source
+behaviour; it does not vendor the upstream project's source files. The trust core
+(safe PDF download → MinerU structured parsing → cite_check → provenance) remains
+Aria Review's own contribution and is applied to all multi-source candidates.

@@ -34,9 +34,12 @@ from typing import Any, Callable
 
 from sqlalchemy import select
 
+from ..config import settings
 from ..harness.tools import BaseTool, ToolResult
 from ..ingest.fulltext import ingest_pdfs
-from ..models import Attachment, ProjectPaper
+from ..ingest.oa_fulltext import fetch_and_store_oa_fulltext
+from ..models import Attachment, Paper, ProjectPaper
+from ..repositories.library import _normalize_doi
 from ..repositories.project import add_paper_to_project, find_project_paper
 
 
@@ -49,10 +52,24 @@ class IngestTool(BaseTool):
         "全文摄取：用 MinerU 把指定路径的 PDF（或项目内尚未解析的论文）解析为全文 "
         "Markdown，建文献题录并关联到当前项目；缓存命中直接复用，不重复 OCR"
     )
-    actions = ["parse"]
+    actions = ["parse", "oa_fulltext"]
     tags = ["read", "write"]  # 写 Paper/Attachment/ProjectPaper → 进 write 集合（串行）
 
     action_schemas = {
+        "oa_fulltext": {
+            "type": "object",
+            "properties": {
+                "paper_ids": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": (
+                        "要补开放获取(OA)全文的论文 ID 列表。仅对多源检索导入、带 OA PDF 的"
+                        "入选论文用；安全下载 PDF → MinerU 解析 → 建页/块溯源结构。"
+                    ),
+                },
+            },
+            "required": ["paper_ids"],
+        },
         "parse": {
             "type": "object",
             "properties": {
@@ -88,10 +105,13 @@ class IngestTool(BaseTool):
     async def _execute(
         self, action: str, params: dict[str, Any], context: Any = None,
     ) -> ToolResult:
-        if action != "parse":
+        if action not in ("parse", "oa_fulltext"):
             return self._fail(action, f"不支持的 action: {action}")
 
         ctx = context if isinstance(context, dict) else {}
+        if action == "oa_fulltext":
+            return await self._execute_oa_fulltext(params, ctx)
+
         session_factory = ctx.get("session_factory") or self._sf
         project_id = params.get("project_id") or ctx.get("project_id")
 
@@ -198,6 +218,69 @@ class IngestTool(BaseTool):
         # data_source: 有缓存命中时标 cache，否则 api（MinerU/本地降级）
         data_source = "cache" if cached and not done else "api"
         return self._ok(action, rows, source=data_source, summary=summary)
+
+    # ------------------------------------------------------------------
+    # OA 全文溯源贯通（M4）—— 入选论文 OA PDF → 安全下载 → MinerU → 页/块溯源
+    # ------------------------------------------------------------------
+
+    async def _execute_oa_fulltext(self, params: dict[str, Any], ctx: dict) -> ToolResult:
+        session_factory = ctx.get("session_factory") or self._sf
+        if session_factory is None:
+            return self._fail("oa_fulltext", "缺少 session_factory（无法访问数据库）")
+        raw_ids = params.get("paper_ids") or []
+        try:
+            paper_ids = [int(p) for p in raw_ids]
+        except (TypeError, ValueError):
+            return self._fail("oa_fulltext", "paper_ids 必须是整数列表")
+        if not paper_ids:
+            return self._fail("oa_fulltext", "paper_ids 是必填字段")
+        # 配额闸门：一次最多补 N 篇，防 MinerU 配额爆（§4.5）。
+        cap = int(settings.pdf_resolve_max_candidates)
+        capped = len(paper_ids) > cap
+        paper_ids = paper_ids[:cap]
+
+        # 从本次检索缓存构建 DOI→OA pdfUrl 映射（导入的 paper 未存 pdfUrl，回查候选）。
+        cand_pdf: dict[str, str] = {}
+        for c in ctx.get("search_candidates") or []:
+            if not isinstance(c, dict):
+                continue
+            doi = (c.get("doi") or "").strip()
+            pdf = (c.get("pdfUrl") or "").strip()
+            if doi and pdf:
+                cand_pdf[_normalize_doi(doi)] = pdf
+
+        done = rejected = skipped = failed = 0
+        rows: list[dict] = []
+        async with session_factory() as s:
+            for pid in paper_ids:
+                try:
+                    paper = await s.get(Paper, pid)
+                    doi = (paper.doi if paper else None) or None
+                    pdf_url = cand_pdf.get(_normalize_doi(doi)) if doi else None
+                    res = await fetch_and_store_oa_fulltext(
+                        pid, pdf_url=pdf_url, doi=doi, session=s,
+                    )
+                except Exception as exc:  # noqa: BLE001  单篇异常不拖垮整批
+                    await s.rollback()
+                    res = {"status": "failed", "paper_id": pid, "reason": str(exc)}
+                status = res.get("status")
+                if status == "done":
+                    done += 1
+                elif status == "rejected":
+                    rejected += 1
+                elif status == "failed":
+                    failed += 1
+                else:
+                    skipped += 1
+                rows.append({"paper_id": pid, "status": status, "reason": res.get("reason"),
+                             "url_source": res.get("url_source")})
+
+        summary = (
+            f"OA 全文溯源：成功 {done} 篇，安全拒绝 {rejected} 篇，无 OA/跳过 {skipped} 篇，"
+            f"解析失败 {failed} 篇。成功篇已建页/块溯源结构，可参与 cite_check。"
+            + (f"（超额只处理前 {cap} 篇）" if capped else "")
+        )
+        return self._ok("oa_fulltext", rows, source="api", summary=summary)
 
     # ------------------------------------------------------------------
     # 辅助：项目内尚未 OCR-done 的论文附件（path + 原始 attachment_id）

@@ -333,13 +333,17 @@ def test_ingest_tool_function_definitions(session_factory):
     assert reg.is_write_tool("ingest"), "IngestTool 应为写工具（串行）"
 
     defs = reg.get_function_definitions()
-    names = {d["function"]["name"] for d in defs}
-    assert "ingest__parse" in names
+    by_name = {d["function"]["name"]: d for d in defs}
+    assert "ingest__parse" in by_name
+    assert "ingest__oa_fulltext" in by_name  # M4 新增
 
     for fd in defs:
         assert fd["type"] == "function"
-        params = fd["function"]["parameters"]
-        assert params["type"] == "object"
-        assert "project_id" in params["properties"]
-        assert "paths" in params["properties"]
-        assert params["properties"]["paths"]["type"] == "array"
+        assert fd["function"]["parameters"]["type"] == "object"
+
+    parse_props = by_name["ingest__parse"]["function"]["parameters"]["properties"]
+    assert "project_id" in parse_props
+    assert parse_props["paths"]["type"] == "array"
+
+    oa_props = by_name["ingest__oa_fulltext"]["function"]["parameters"]["properties"]
+    assert oa_props["paper_ids"]["type"] == "array"

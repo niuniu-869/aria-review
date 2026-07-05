@@ -125,6 +125,48 @@ describe("SearchCandidateCards", () => {
     expect(screen.getByText("仅题录")).toBeInTheDocument();
   });
 
+  it("多源候选来源徽标如实显示各源，不再一律标 OpenAlex", () => {
+    render(
+      <SearchCandidateCards
+        projectId={5}
+        candidates={[
+          { ...MOCK_CANDIDATES[0], candidate_id: "core:1", source: "core", provider: "core", openalexId: null },
+          { ...MOCK_CANDIDATES[1], candidate_id: "epmc:1", source: "europepmc", provider: "europepmc", openalexId: null },
+        ]}
+      />,
+    );
+    expect(screen.getByText("CORE")).toBeInTheDocument();
+    expect(screen.getByText("EuropePMC")).toBeInTheDocument();
+    // 不应把 core/europepmc 误标成 OpenAlex
+    expect(screen.queryByText("OpenAlex")).not.toBeInTheDocument();
+  });
+
+  it("跨源合并候选显示所有涉及源(mergedSources)", () => {
+    render(
+      <SearchCandidateCards
+        projectId={5}
+        candidates={[
+          { ...MOCK_CANDIDATES[0], candidate_id: "m:1", source: "core", provider: "core",
+            mergedSources: ["core", "openalex"], openalexId: null },
+        ]}
+      />,
+    );
+    expect(screen.getByText("CORE+OpenAlex")).toBeInTheDocument();
+  });
+
+  it("带 OA 直链的候选显示「开放获取PDF」徽标", () => {
+    render(
+      <SearchCandidateCards
+        projectId={5}
+        candidates={[
+          { ...MOCK_CANDIDATES[0], candidate_id: "oa:1", source: "core", provider: "core",
+            pdfUrl: "https://oa.example.org/x.pdf", sciverseDocId: null, openalexId: null },
+        ]}
+      />,
+    );
+    expect(screen.getByText("开放获取PDF")).toBeInTheDocument();
+  });
+
   it("默认全部候选被勾选", () => {
     render(<SearchCandidateCards projectId={5} candidates={MOCK_CANDIDATES} />);
 

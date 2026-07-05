@@ -83,14 +83,19 @@ def _http_error_reason(exc: httpx.HTTPError) -> str:
     return f"请求失败（{exc.__class__.__name__}: {text}）"
 
 
-def _candidate_id(row: dict[str, Any]) -> str:
+def _candidate_id(row: dict[str, Any], source: str = "sciverse") -> str:
+    # 非 sciverse 源优先用源原生 id（openalex work_id / core id / pmid…）→ 稳定唯一。
+    if source != "sciverse":
+        native = str(row.get("source_id") or "").strip()
+        if native:
+            return f"{source}:{hashlib.sha256(native.encode()).hexdigest()[:16]}"
     for key in ("unique_id", "doc_id", "doi"):
         value = str(row.get(key) or "").strip()
         if value:
             prefix = "doi" if key == "doi" else "sciverse"
             return f"{prefix}:{hashlib.sha256(value.encode()).hexdigest()[:16]}"
     title = str(row.get("title") or "").strip()
-    return "sciverse:" + hashlib.sha256(title.encode()).hexdigest()[:16]
+    return f"{source}:" + hashlib.sha256(title.encode()).hexdigest()[:16]
 
 
 def _author_display_name(v: Any) -> str:
@@ -211,8 +216,16 @@ def _keywords(row: dict[str, Any]) -> str | None:
     return "; ".join(unique) if unique else None
 
 
-def normalize_meta_result(row: dict[str, Any]) -> dict[str, Any]:
-    """Map Sciverse meta-search row to the existing SearchCandidate shape."""
+def normalize_meta_result(row: dict[str, Any], source: str = "sciverse") -> dict[str, Any]:
+    """Map a meta-search row to the shared SearchCandidate shape.
+
+    ``source`` 参数化 (codex P1)：默认 ``"sciverse"`` 保持现有 Sciverse 调用**行为兼容**
+    (externalIds 仍走 unique_id/doc_id/doi，sciverseDocId/sciverseUniqueId 照旧)。
+    多源接入时传各自 source (openalex/core/europepmc/crossref/semantic/hal/base)：
+    走通用分支——外部 id 从 ``row["source_id"]`` (+``source_id_type``) 生成，并可携带
+    OA 直链 (``pdfUrl``) 供 §4.5 resolve_pdf 安全下载。8 源候选复用 _authors/_dedup_authors/
+    _keywords/parse_year 的既有鲁棒性 (float 年份→int、作者去重、关键词归一)。
+    """
     from .ingest.search_metadata import parse_year
 
     title = str(row.get("title") or "").strip()
@@ -220,39 +233,57 @@ def normalize_meta_result(row: dict[str, Any]) -> dict[str, Any]:
     doc_id = row.get("doc_id")
     unique_id = row.get("unique_id")
     venue = row.get("publication_venue_name_unified")
+    is_sciverse = source == "sciverse"
     # Sciverse 返回 year 为 float(如 2025.0)，下游 isinstance(int) 校验会整列丢弃 →
     # 语料全空年份 → R 概览崩溃(生产 502 实例)。此处统一 int 化，date 兜底。
     year = parse_year(
         row.get("publication_published_year"),
         date_hint=row.get("publication_published_date"),
     )
-    url = f"https://doi.org/{doi}" if doi else None
+    doi_url = f"https://doi.org/{doi}" if doi else None
+    # url：sciverse 严格保持旧行为(无 DOI 即 None，字节不动)；非 sciverse 源常无 DOI
+    # 但有 landing/OA 落地页，回落到源自带 url (codex P1 行为兼容纠正)。
+    if is_sciverse:
+        url = doi_url
+    else:
+        url = doi_url or (str(row.get("url")).strip() if row.get("url") else None)
     external_ids: list[dict[str, Any]] = []
-    if unique_id:
-        external_ids.append({
-            "provider": "sciverse",
-            "id_type": "unique_id",
-            "external_id": str(unique_id),
-            "raw": row,
-        })
-    if doc_id:
-        external_ids.append({
-            "provider": "sciverse",
-            "id_type": "doc_id",
-            "external_id": str(doc_id),
-            "raw": row,
-        })
+    if is_sciverse:
+        if unique_id:
+            external_ids.append({
+                "provider": "sciverse",
+                "id_type": "unique_id",
+                "external_id": str(unique_id),
+                "raw": row,
+            })
+        if doc_id:
+            external_ids.append({
+                "provider": "sciverse",
+                "id_type": "doc_id",
+                "external_id": str(doc_id),
+                "raw": row,
+            })
+    else:
+        source_id = row.get("source_id")
+        if source_id:
+            external_ids.append({
+                "provider": source,
+                "id_type": str(row.get("source_id_type") or "work_id"),
+                "external_id": str(source_id),
+                "url": url,
+                "raw": row,
+            })
     if doi:
         external_ids.append({
             "provider": "doi",
             "id_type": "doi",
             "external_id": str(doi),
-            "url": url,
+            "url": doi_url,
             "raw": row,
         })
 
-    return {
-        "candidate_id": _candidate_id(row),
+    candidate: dict[str, Any] = {
+        "candidate_id": _candidate_id(row, source),
         "title": title,
         "doi": doi,
         "authors": _authors(row),
@@ -263,13 +294,23 @@ def normalize_meta_result(row: dict[str, Any]) -> dict[str, Any]:
         "url": url,
         "publicationDate": row.get("publication_published_date"),
         "citedByCount": row.get("citation_count"),
-        "source": "sciverse",
-        "provider": "sciverse",
-        "sciverseDocId": doc_id,
-        "sciverseUniqueId": unique_id,
+        "source": source,
+        "provider": source,
+        "sciverseDocId": doc_id if is_sciverse else None,
+        "sciverseUniqueId": unique_id if is_sciverse else None,
         "externalIds": external_ids,
         "raw": row,
     }
+    # OA 直链 / OA 状态为增量字段，仅对非 sciverse 源开放 (codex P1)，严格保持 sciverse
+    # 输出结构不变。sciverse 全文走 content 端点，不经此 pdfUrl。
+    if not is_sciverse:
+        pdf_url = str(row.get("pdf_url") or "").strip()
+        if pdf_url:
+            candidate["pdfUrl"] = pdf_url
+        oa_status = str(row.get("oa_status") or "").strip()
+        if oa_status:
+            candidate["oaStatus"] = oa_status
+    return candidate
 
 
 def normalize_agentic_hit(row: dict[str, Any]) -> dict[str, Any]:

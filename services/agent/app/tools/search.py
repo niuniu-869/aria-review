@@ -23,6 +23,7 @@ import logging
 from typing import Any
 
 from ..sciverse import SciverseClient, normalize_meta_result, sciverse_config
+from ..sources import available_sources, multi_source_search
 from ..config import settings
 from ..errors import ApiError
 from ..harness.tools import BaseTool, ToolResult
@@ -127,6 +128,31 @@ def _candidate_id(cand: dict) -> str:
     return hashlib.sha256(title.encode()).hexdigest()[:16]
 
 
+def _cache_key(item: dict) -> str:
+    """候选缓存去重键 (与既有 topic/sciverse 分支一致)。"""
+    return (
+        item.get("openalexId")
+        or item.get("sciverseDocId")
+        or item.get("sciverseUniqueId")
+        or item.get("doi")
+        or item.get("candidate_id")
+        or f"{item.get('title', '')}:{item.get('year', '')}"
+    )
+
+
+def _cache_candidates(ctx: dict | None, candidates: list[dict]) -> None:
+    """把候选并入 ctx['search_candidates'] (去重)，供 project__import_search_results 导入。"""
+    if not isinstance(ctx, dict):
+        return
+    cached = ctx.setdefault("search_candidates", [])
+    seen = {_cache_key(item) for item in cached if isinstance(item, dict)}
+    for item in candidates:
+        key = _cache_key(item)
+        if key not in seen:
+            cached.append(item)
+            seen.add(key)
+
+
 def _parse_limit(value: Any) -> tuple[int | None, str | None]:
     """解析检索上限；超出契约时显式失败，不再静默截断。"""
     if value in (None, ""):
@@ -152,11 +178,14 @@ class SearchTool(BaseTool):
     tool_id = "search"
     tool_name = "Search Tool"
     description = (
-        "按主题/关键词检索文献，返回候选卡列表（不建库）；支持 OpenAlex 与 Sciverse 两个数据源"
-        "（provider 参数，默认 sciverse，省略则自动路由到 sciverse；未配置 sciverse 时回退 openalex）；"
+        "按主题/关键词检索文献，返回候选卡列表（不建库）。"
+        "topic: 单源检索（OpenAlex/Sciverse，默认 sciverse）；"
+        "multi: 多源并发检索（OpenAlex/CORE/EuropePMC/Crossref/Semantic Scholar/HAL），"
+        "跨源合并去重 + 确定性预过滤，广度更强、更易命中开放获取 PDF，主题综述建库首选；"
+        "sources: 查询各数据源是否已配置可用。"
         "检索得到候选后，告知用户可在候选卡中选择加入文献库或纳入"
     )
-    actions = ["topic"]
+    actions = ["topic", "multi", "sources"]
     tags = ["read"]  # 只读工具，不加 "write"
 
     action_schemas = {
@@ -193,6 +222,39 @@ class SearchTool(BaseTool):
             },
             "required": ["query"],
         },
+        "multi": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "检索关键词/主题（必填）"},
+                "sources": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["openalex", "core", "europepmc", "crossref", "semantic", "hal"],
+                    },
+                    "description": (
+                        "要并发检索的数据源；省略或传空则自动使用全部已配置源。"
+                        "先用 sources action 查看哪些源可用。"
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "每个源返回候选上限，默认 50",
+                    "minimum": 1,
+                    "maximum": SEARCH_LIMIT_MAX,
+                },
+                "since": {
+                    "type": "string",
+                    "description": "发表年份下限（YYYY-MM-DD），默认 2016-01-01",
+                },
+            },
+            "required": ["query"],
+        },
+        "sources": {
+            "type": "object",
+            "properties": {},
+            "description": "查询各数据源配置/可用状态，无参数",
+        },
     }
 
     def __init__(self, r_client: Any) -> None:
@@ -209,11 +271,16 @@ class SearchTool(BaseTool):
     async def _execute(
         self, action: str, params: dict[str, Any], context: Any = None,
     ) -> ToolResult:
-        if action != "topic":
+        if action not in ("topic", "multi", "sources"):
             return self._fail(action, f"不支持的 action: {action}")
 
         ctx = context if isinstance(context, dict) else {}
         emit = ctx.get("emit")
+
+        if action == "sources":
+            return self._execute_sources()
+        if action == "multi":
+            return await self._execute_multi(params, emit, ctx)
 
         query = (params.get("query") or "").strip()
         if not query:
@@ -476,6 +543,106 @@ class SearchTool(BaseTool):
                 "provider": "sciverse",
                 "partial": partial,
                 "partialReason": partial_reason,
+            }],
+            source="api",
+            summary=summary,
+        )
+
+    # ------------------------------------------------------------------
+    # 多源检索（M3）—— 复用现有候选缓存/event/导入路径
+    # ------------------------------------------------------------------
+
+    def _execute_sources(self) -> ToolResult:
+        """返回各数据源配置/可用状态，供 Agent 选源前查看（缺 key 显式提示，非静默）。"""
+        rows = available_sources()
+        lines: list[str] = []
+        for r in rows:
+            role = "补链" if r.get("role") == "enrichment" else "检索"
+            status = "可用" if r["configured"] else f"未配置（{r.get('reason') or ''}）"
+            lines.append(f"- {r['source']}（{role}·{r.get('tier', '')}）：{status}")
+        summary = "多源数据源状态（未配置的源不会静默跳过，会如实标注）：\n" + "\n".join(lines)
+        return self._ok("sources", data=[{"sources": rows}], source="api", summary=summary)
+
+    @staticmethod
+    def _format_source_stats(per_source: list[dict]) -> str:
+        parts: list[str] = []
+        for p in per_source:
+            if p.get("available"):
+                note = f"（{p['error']}）" if p.get("error") else ""
+                parts.append(f"{p['source']} {p.get('count', 0)} 篇{note}")
+            else:
+                reason = p.get("reason") or p.get("error") or "不可用"
+                parts.append(f"{p['source']} 未用（{reason}）")
+        return "；".join(parts)
+
+    async def _execute_multi(self, params: dict[str, Any], emit: Any, ctx: dict) -> ToolResult:
+        """多源并发检索 → 跨源合并 + 确定性预过滤 → 复用候选卡/导入路径（双级筛第一级）。"""
+        query = (params.get("query") or "").strip()
+        if not query:
+            return self._fail("multi", "query 是必填字段，请提供检索关键词")
+        limit, limit_error = _parse_limit(params.get("limit"))
+        if limit_error:
+            return self._fail("multi", limit_error)
+        since = (params.get("since") or _DEFAULT_SINCE).strip() or _DEFAULT_SINCE
+        sources = params.get("sources") or "auto"
+
+        try:
+            result = await multi_source_search(sources, query, limit=limit, since=since)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[SearchTool] multi-source 检索异常")
+            return self._fail("multi", f"多源检索服务异常: {exc}")
+
+        src_summary = self._format_source_stats(result.per_source)
+        candidates = result.candidates
+        if not candidates:
+            if emit is not None:
+                try:
+                    await emit({
+                        "type": "search_results", "candidates": [], "query": query,
+                        "provider": "multi", "perSource": result.per_source,
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SearchTool] emit multi 空结果失败: %s", exc)
+            return self._empty(
+                "multi",
+                f"多源检索未得到候选（关键词：{query}）。各源：{src_summary}。"
+                "可换检索式或用 search__sources 查看是否有源未配置。",
+            )
+
+        _cache_candidates(ctx, candidates)
+
+        if emit is not None:
+            try:
+                await emit({
+                    "type": "search_results", "candidates": candidates, "query": query,
+                    "provider": "multi", "perSource": result.per_source,
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[SearchTool] emit multi search_results 失败: %s", exc)
+
+        cards, hidden = _format_candidate_cards(candidates)
+        merge_note = (
+            f"合并前 {result.total_before_merge} → 跨源去重合并后 {result.total_after_merge}"
+            + (f"，超额截断 {result.truncated}" if result.truncated else "")
+        )
+        more_note = f"\n（还有 {hidden} 篇未列出，若噪声较多请收紧检索式）" if hidden > 0 else ""
+        summary = (
+            f"多源检索到 {result.count} 篇候选（{merge_note}；关键词：{query}）。"
+            f"各源：{src_summary}。已生成候选卡，下面逐条列出 candidate_id 与标题，"
+            f"请逐条判断是否真正切题，仅用相关候选的 candidate_id 调用 "
+            f"project__import_search_results 导入：\n{cards}{more_note}"
+        )
+        return self._ok(
+            "multi",
+            data=[{
+                "candidates": candidates,
+                "total": result.count,
+                "query": query,
+                "provider": "multi",
+                "perSource": result.per_source,
+                "totalBeforeMerge": result.total_before_merge,
+                "totalAfterMerge": result.total_after_merge,
+                "truncated": result.truncated,
             }],
             source="api",
             summary=summary,

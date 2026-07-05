@@ -149,6 +149,49 @@ async def test_import_search_results_preserves_metadata_and_dedups(proj_tool):
     assert row["inclusion_status"] == "included"
 
 
+async def test_import_search_results_blocks_bulk_import_without_selection(proj_tool):
+    """双级筛硬约束：候选量超阈值却不传 candidate_ids → 拒绝，逼 Agent 先挑选（QA 污染库缺陷）。"""
+    create_r = await proj_tool.execute("create", {"name": "Bulk Guard"})
+    project_id = create_r.data[0]["project_id"]
+    # 造 60 个不同候选（> 阈值 50）
+    cands = [
+        {"candidate_id": f"C{i}", "title": f"Paper number {i}", "doi": f"10.1/{i}", "year": 2022}
+        for i in range(60)
+    ]
+    ctx = {"search_candidates": cands}
+
+    # 不传 candidate_ids → 拒绝，不导入
+    blocked = await proj_tool.execute(
+        "import_search_results", {"project_id": project_id}, context=ctx,
+    )
+    assert blocked.success is False
+    assert "candidate_ids" in blocked.error and "整批导入" in blocked.error
+
+    # 传 candidate_ids 精选 3 篇 → 正常导入这 3 篇
+    ok = await proj_tool.execute(
+        "import_search_results",
+        {"project_id": project_id, "candidate_ids": ["C0", "C1", "C2"]},
+        context=ctx,
+    )
+    assert ok.success and ok.data[0]["imported"] == 3
+    listed = await proj_tool.execute("list", {"project_id": project_id})
+    assert len(listed.data) == 3
+
+
+async def test_import_search_results_small_set_still_allows_default_all(proj_tool):
+    """阈值内的小候选集仍允许省略 candidate_ids 默认全导（不误伤既有小集流程）。"""
+    create_r = await proj_tool.execute("create", {"name": "Small Set"})
+    project_id = create_r.data[0]["project_id"]
+    cands = [
+        {"candidate_id": f"S{i}", "title": f"Small paper {i}", "doi": f"10.2/{i}", "year": 2023}
+        for i in range(5)
+    ]
+    r = await proj_tool.execute(
+        "import_search_results", {"project_id": project_id}, context={"search_candidates": cands},
+    )
+    assert r.success and r.data[0]["imported"] == 5
+
+
 @pytest.mark.asyncio
 async def test_import_search_results_auto_fetches_sciverse_fulltext(proj_tool, session, monkeypatch, tmp_path):
     """导入 Sciverse doc_id 候选后自动补全文，单篇失败不影响题录导入。"""

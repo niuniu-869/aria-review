@@ -56,6 +56,21 @@ class Settings:
     sciverse_timeout: float = float(os.environ.get("SCIVERSE_TIMEOUT", "60"))
     sciverse_content_chunk_chars: int = int(os.environ.get("SCIVERSE_CONTENT_CHUNK_CHARS", "7000"))
     sciverse_content_max_chars: int = int(os.environ.get("SCIVERSE_CONTENT_MAX_CHARS", "500000"))
+    # 多源检索补强 (Frontier Review 集成)。缺 key 的源在可用源清单显式标"未配置"，
+    # 不静默 return [] (codex P1：静默会让线上误判"没文献")。见 app/sources/。
+    core_api_key: str = os.environ.get("CORE_API_KEY", "")
+    openalex_mailto: str = os.environ.get("OPENALEX_MAILTO", "")  # OpenAlex polite-pool 标识 (免鉴权)
+    unpaywall_email: str = os.environ.get("UNPAYWALL_EMAIL", "")  # Unpaywall /v2/{doi} 必填 email (免鉴权)
+    semantic_scholar_api_key: str = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")  # 无 key 易 429
+    crossref_mailto: str = os.environ.get("CROSSREF_MAILTO", "")  # Crossref polite-pool 标识 (免鉴权)
+    # 多源统一超时/重试 + PDF 安全下载闸门 (§4.5)
+    multisource_timeout: float = float(os.environ.get("MULTISOURCE_TIMEOUT", "30"))
+    multisource_max_retries: int = int(os.environ.get("MULTISOURCE_MAX_RETRIES", "2"))
+    multisource_per_source_limit: int = int(os.environ.get("MULTISOURCE_PER_SOURCE_LIMIT", "50"))
+    multisource_total_cap: int = int(os.environ.get("MULTISOURCE_TOTAL_CAP", "200"))
+    pdf_download_max_bytes: int = int(os.environ.get("PDF_DOWNLOAD_MAX_BYTES", str(50 * 1024 * 1024)))
+    pdf_download_timeout: float = float(os.environ.get("PDF_DOWNLOAD_TIMEOUT", "60"))
+    pdf_resolve_max_candidates: int = int(os.environ.get("PDF_RESOLVE_MAX_CANDIDATES", "25"))
     image_api_key: str = os.environ.get("IMAGE_API_KEY", "")
     image_base_url: str = os.environ.get("IMAGE_BASE_URL", "https://api.openai.com/v1")
     image_model: str = os.environ.get("IMAGE_MODEL", "gpt-image-1")

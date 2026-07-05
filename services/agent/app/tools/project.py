@@ -19,6 +19,9 @@ from ..repositories import project as proj_repo
 from ..sciverse import SciverseClient, sciverse_config
 
 _VALID_STATUSES = {"candidate", "included", "excluded", "maybe"}
+# 不传 candidate_ids 的默认整批导入，仅在候选量 ≤ 此阈值时允许；超过则强制显式挑选
+# （双级筛硬约束，防多源大候选集被盲目整批灌库）。
+_IMPORT_SELECT_THRESHOLD = 50
 
 
 class ProjectTool(BaseTool):
@@ -322,6 +325,18 @@ class ProjectTool(BaseTool):
             limit = None if raw_limit in (None, "", "all", "ALL", 0) else max(1, int(raw_limit))
         except (TypeError, ValueError):
             limit = None
+
+        # 双级筛硬约束（QA 实测：多源候选量大时 Agent 常省略 candidate_ids 盲目整批导入，
+        # 把不相关文献灌进库，且无批量清理手段）。候选量超阈值却不传 candidate_ids 时拒绝，
+        # 强制 Agent 先按相关性挑 ID——prompt 已要求但 LLM 不总遵守，故在工具层兜底。
+        distinct_cached = len({self._candidate_key(c) for c in cached if (c.get("title") or "").strip()})
+        if not wanted and distinct_cached > _IMPORT_SELECT_THRESHOLD:
+            return self._fail(
+                "import_search_results",
+                f"当前检索缓存有 {distinct_cached} 篇候选，数量较多，不能不加筛选整批导入。"
+                f"请逐条判断相关性，仅用 candidate_ids 传入你**高度确信切题**的候选 ID 再导入，"
+                f"避免把不相关文献一并灌入文献库（阈值 {_IMPORT_SELECT_THRESHOLD} 篇）。",
+            )
 
         selected: list[dict] = []
         seen: set[str] = set()
