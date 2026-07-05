@@ -247,6 +247,151 @@ async def test_controller_create_persists_run(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_list_recent_dialog_only_done_and_ordered(session_factory):
+    """list_recent_dialog：仅取 done+有 final_output 的 run，时间正序，封顶 max_turns。"""
+    from app.harness.engine import LoopState
+
+    pid = await _new_project(session_factory)
+
+    async def _make_done_run(prompt: str, reply: str) -> int:
+        async with session_factory() as s:
+            run = await repo.create_run(s, project_id=pid)
+        async with session_factory() as s:
+            st = LoopState(
+                messages=[
+                    {"role": "system", "content": "S"},
+                    {"role": "user", "content": prompt},
+                ],
+                status="done",
+                final_output=reply,
+            )
+            await repo.save_state(s, run.id, st)
+        return run.id
+
+    # 8 条 done 对话 + 1 条 running（无 final_output，应被过滤）
+    for i in range(8):
+        await _make_done_run(f"问题{i}", f"回复{i}")
+    async with session_factory() as s:
+        await repo.create_run(s, project_id=pid)  # running，无 final_output
+
+    async with session_factory() as s:
+        turns = await repo.list_recent_dialog(s, pid, max_turns=6)
+
+    # 只回最近 6 轮（问题2..问题7），且时间正序
+    assert turns == [(f"问题{i}", f"回复{i}") for i in range(2, 8)]
+
+
+@pytest.mark.asyncio
+async def test_create_injects_prior_dialog_history(session_factory):
+    """真实多轮：本项目已有 done run 时，新 run 初始 messages 应含
+    [system, 历史user, 历史assistant, 当前user]。"""
+    registry = _build_registry()
+    publisher = SubscribableEventPublisher()
+    controller = RunController(
+        session_factory=session_factory,
+        publisher=publisher,
+        build_ctx=_make_build_ctx(registry),
+    )
+    pid = await _new_project(session_factory)
+
+    # 第 1 轮：直接给答案跑到 done
+    run1 = await controller.create(project_id=pid, user_prompt="综述阿尔茨海默病早筛")
+
+    async def direct_llm(router, model_names, messages, tools=None, **kwargs):
+        return _llm_response(_assistant_message("第一轮回复：已检索到 20 篇文献"))
+
+    with patch("app.harness.engine.call_llm_with_fallback", new=direct_llm):
+        await controller._drive(run1, None)
+
+    # 第 2 轮：create 应把第 1 轮对话拼进初始 messages
+    run2 = await controller.create(project_id=pid, user_prompt="把它们加入语料")
+    async with session_factory() as s:
+        run = await repo.get_run(s, run2)
+    msgs = run.messages_snapshot["messages"]
+    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "user"]
+    assert msgs[1]["content"] == "综述阿尔茨海默病早筛"
+    assert msgs[2]["content"] == "第一轮回复：已检索到 20 篇文献"
+    assert msgs[3]["content"] == "把它们加入语料"
+
+
+@pytest.mark.asyncio
+async def test_history_correct_at_third_turn(session_factory):
+    """codex P1 回归：第三轮历史必须是 [(U1,A1),(U2,A2)]，而非 [(U1,A1),(U1,A2)]。
+
+    注入历史后 run2 的 messages[1] 是历史 U1、不是本轮 U2；若从 messages 猜「第一条 user」
+    会把 run2 的 prompt 误抽成 U1，导致 U2 丢失 + A2 错配到 U1。断言权威 user_prompt 生效。
+    """
+    registry = _build_registry()
+    publisher = SubscribableEventPublisher()
+    controller = RunController(
+        session_factory=session_factory,
+        publisher=publisher,
+        build_ctx=_make_build_ctx(registry),
+    )
+    pid = await _new_project(session_factory)
+
+    async def _turn(prompt: str, reply: str) -> None:
+        run_id = await controller.create(project_id=pid, user_prompt=prompt)
+
+        async def direct_llm(router, model_names, messages, tools=None, **kwargs):
+            return _llm_response(_assistant_message(reply))
+
+        with patch("app.harness.engine.call_llm_with_fallback", new=direct_llm):
+            await controller._drive(run_id, None)
+
+    await _turn("主题A：糖尿病肾病", "回复A")
+    await _turn("主题B：把它们导出", "回复B")
+
+    # 第三轮 create：初始 messages 应含两轮**正确配对**的历史
+    run3 = await controller.create(project_id=pid, user_prompt="当前第三轮")
+    async with session_factory() as s:
+        run = await repo.get_run(s, run3)
+    msgs = run.messages_snapshot["messages"]
+    assert [m["role"] for m in msgs] == [
+        "system", "user", "assistant", "user", "assistant", "user",
+    ]
+    assert msgs[1]["content"] == "主题A：糖尿病肾病"
+    assert msgs[2]["content"] == "回复A"
+    assert msgs[3]["content"] == "主题B：把它们导出"   # 关键：不是 "主题A..."
+    assert msgs[4]["content"] == "回复B"
+    assert msgs[5]["content"] == "当前第三轮"
+    # 权威 user_prompt 落库
+    assert run.messages_snapshot["user_prompt"] == "当前第三轮"
+
+
+@pytest.mark.asyncio
+async def test_history_truncates_long_reply(session_factory):
+    """超长历史回复（如综述全文）注入前按上限截断，控住上下文体积。"""
+    from app.agent.run_controller import _HISTORY_ASSISTANT_MAX_CHARS
+
+    registry = _build_registry()
+    publisher = SubscribableEventPublisher()
+    controller = RunController(
+        session_factory=session_factory,
+        publisher=publisher,
+        build_ctx=_make_build_ctx(registry),
+    )
+    pid = await _new_project(session_factory)
+
+    run1 = await controller.create(project_id=pid, user_prompt="写一篇长综述")
+    long_reply = "甲" * (_HISTORY_ASSISTANT_MAX_CHARS + 500)
+
+    async def long_llm(router, model_names, messages, tools=None, **kwargs):
+        return _llm_response(_assistant_message(long_reply))
+
+    with patch("app.harness.engine.call_llm_with_fallback", new=long_llm):
+        await controller._drive(run1, None)
+
+    run2 = await controller.create(project_id=pid, user_prompt="继续")
+    async with session_factory() as s:
+        run = await repo.get_run(s, run2)
+    injected = run.messages_snapshot["messages"][2]["content"]
+    assert injected.startswith("甲" * _HISTORY_ASSISTANT_MAX_CHARS)
+    assert "已截断" in injected
+    assert len(injected) < len(long_reply)
+
+
+@pytest.mark.asyncio
 async def test_drive_readonly_to_done(session_factory):
     registry = _build_registry()
     publisher = SubscribableEventPublisher()

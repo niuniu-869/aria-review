@@ -1,6 +1,6 @@
 [project]
 name = "bibliocn-agent"
-version = "0.4.0"
+version = "0.4.1"
 description = "BiblioCN agent backend (FastAPI) — 唯一后端: agent/编排/调R/鉴权"
 requires-python = ">=3.11"
 dependencies = [

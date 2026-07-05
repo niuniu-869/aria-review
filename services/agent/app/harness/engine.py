@@ -746,6 +746,10 @@ class LoopState:
     """
 
     messages: list[dict]
+    # 本 run 的原始用户指令（create 时 seed）。单独存一份是因为注入多轮历史后，
+    # messages[1] 不再必然是本 run 的 user——从混合 messages 里猜会错抽成历史 user
+    # （codex P1）。这是复述给下一轮历史的权威来源。
+    user_prompt: str = ""
     round_idx: int = 0
     tool_rounds: int = 0
     last_memo_idx: int = 2
@@ -763,6 +767,7 @@ class LoopState:
         """序列化为 JSON-able dict（messages / all_tool_results 已是 JSON-able）。"""
         return {
             "messages": self.messages,
+            "user_prompt": self.user_prompt,
             "round_idx": self.round_idx,
             "tool_rounds": self.tool_rounds,
             "last_memo_idx": self.last_memo_idx,
@@ -788,6 +793,7 @@ class LoopState:
 
         return cls(
             messages=d.get("messages", []),
+            user_prompt=d.get("user_prompt", ""),
             round_idx=d.get("round_idx", 0),
             tool_rounds=d.get("tool_rounds", 0),
             last_memo_idx=d.get("last_memo_idx", 2),

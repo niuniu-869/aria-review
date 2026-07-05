@@ -193,3 +193,81 @@ async def list_runs(s: AsyncSession, project_id: int) -> list[AgentRun]:
         .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
     )
     return list((await s.execute(q)).scalars().all())
+
+
+def _extract_user_prompt(snapshot) -> str:
+    """从一条 run 的快照里取「本 run 的原始用户指令」。
+
+    权威来源是快照顶层的 "user_prompt"（create 时 seed，LoopState 持久化）——**必须**用它，
+    不能从 messages 里猜：注入多轮历史后 messages[1] 是历史 user 而非本 run 的 user，扫
+    「第一条 role=user」会错抽成最早的历史指令，导致第三轮起历史 user/assistant 错配
+    （codex P1）。
+
+    回退：旧快照（本次改动前落库）无 "user_prompt" 键——那些 run 当年无注入历史，
+    messages[1] 就是真实指令，故退回扫第一条 role=user。兼容新格式（dict 快照）与
+    旧格式（纯 list）。取不到返回空串。
+    """
+    if isinstance(snapshot, dict):
+        prompt = snapshot.get("user_prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return prompt.strip()
+        messages = snapshot.get("messages") or []
+    elif isinstance(snapshot, list):
+        messages = snapshot
+    else:
+        return ""
+    # 回退：旧快照无 user_prompt（无注入历史）→ 第一条 role=user 即原始指令。
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "user":
+            content = m.get("content")
+            if isinstance(content, str):
+                return content.strip()
+    return ""
+
+
+async def list_recent_dialog(
+    s: AsyncSession,
+    project_id: int,
+    *,
+    exclude_run_id: int | None = None,
+    max_turns: int = 6,
+) -> list[tuple[str, str]]:
+    """返回本项目最近若干轮「已完成对话」的 (用户指令, 最终回复) 列表，**时间正序**。
+
+    供 RunController.create 拼进新 run 的初始 messages，实现 agent 工作台跨消息的真实
+    多轮对话记忆（每条消息本是一条独立 run，初始只 seed 当前 prompt，遂丢上文）。
+
+    取舍：
+      - 仅取 status=done 且 final_output 非空的 run —— 半途 failed/cancelled/进行中的
+        run 没有可复述的完整回合，跳过（避免把残缺上下文喂回模型）。
+      - user 指令由 _extract_user_prompt 权威取回（快照顶层 user_prompt）；取不到跳过该轮。
+      - 多取 max_turns*3 行再过滤，最后截断到 max_turns 并反转为时间正序。
+      - exclude_run_id 排除刚建的当前 run（其 status 仍是 running，本已被 status 过滤，
+        此参数为双保险）。
+    """
+    q = (
+        select(AgentRun)
+        .where(
+            AgentRun.project_id == project_id,
+            AgentRun.status == "done",
+            AgentRun.final_output.isnot(None),
+        )
+        .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+        .limit(max_turns * 3)
+    )
+    rows = list((await s.execute(q)).scalars().all())
+    turns: list[tuple[str, str]] = []
+    for run in rows:
+        if exclude_run_id is not None and run.id == exclude_run_id:
+            continue
+        reply = (run.final_output or "").strip()
+        if not reply:
+            continue
+        prompt = _extract_user_prompt(run.messages_snapshot)
+        if not prompt:
+            continue
+        turns.append((prompt, reply))
+        if len(turns) >= max_turns:
+            break
+    turns.reverse()  # DB 取的是倒序，反转成时间正序（旧 → 新）
+    return turns

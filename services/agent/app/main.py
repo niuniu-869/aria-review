@@ -294,7 +294,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="BiblioCN agent", version="0.4.0", lifespan=lifespan,
+    title="BiblioCN agent", version="0.4.1", lifespan=lifespan,
     dependencies=[Depends(global_guard)],  # 全局守卫：认证 + project 归属（Round 5）
 )
 app.add_middleware(

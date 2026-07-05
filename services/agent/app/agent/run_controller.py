@@ -42,6 +42,22 @@ logger = logging.getLogger("agent.run_controller")
 # _drive 的 llm_override 哨兵：区分「未传（从 _overrides 读）」与「显式传 None（清 key）」。
 _UNSET = object()
 
+# 多轮对话记忆边界：每次新消息本是一条独立 run，create() 把本项目最近若干轮已完成
+# 对话（用户指令 + 最终回复）以 user/assistant 交替形式拼进初始 messages，让 agent 跨消息
+# 记得上文。上限用于控住上下文体积——超长回复（如综述全文）按字数截断（对话语境只需
+# 「记得做过什么」，全文另存工件），回溯轮数封顶避免上下文无界增长。
+_HISTORY_MAX_TURNS = 6            # 最多回溯 6 轮历史对话
+_HISTORY_USER_MAX_CHARS = 1000   # 单条历史用户指令上限
+_HISTORY_ASSISTANT_MAX_CHARS = 1500  # 单条历史 assistant 回复上限
+
+
+def _truncate_history(text: str, limit: int) -> str:
+    """按字数截断历史消息，超限尾部标注原文长度（保留可读性、控住上下文体积）。"""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n…[已截断，原文共 {len(text)} 字]"
+
 
 class RunController:
     """驱动 agent run 的控制器（创建 / 后台驱动 / 事件落库与扇出）。"""
@@ -99,16 +115,57 @@ class RunController:
         # （基于本项目 included 语料、自动从 tool_context 取 project_id）从不被调用。
         system_prompt = AGENT_SYSTEM + await self._project_block(project_id)
 
-        # 初始 LoopState：system + user 两条 messages。
+        # 多轮对话记忆：加载本项目最近已完成对话，拼成 user/assistant 交替消息，
+        # 让本条新 run 延续跨消息上文（首轮无历史 → 空列表 → 退回 [system, user]）。
+        history = await self._history_messages(project_id, exclude_run_id=run_id)
+
+        # 初始 LoopState：system + 历史多轮 + 当前 user 消息。
+        # user_prompt 单独存一份：注入历史后 messages[1] 不再是本 run 的 user，
+        # 供下一轮 list_recent_dialog 权威取回本 run 的原始指令（codex P1）。
         state = LoopState(
             messages=[
                 {"role": "system", "content": system_prompt},
+                *history,
                 {"role": "user", "content": user_prompt},
             ],
+            user_prompt=user_prompt,
         )
         async with self._session_factory() as s:
             await repo.save_state(s, run_id, state)
         return run_id
+
+    async def _history_messages(
+        self, project_id: int, exclude_run_id: int,
+    ) -> list[dict]:
+        """加载本项目最近已完成对话，构建真实多轮 messages（user/assistant 交替）。
+
+        每条用户消息本是一条独立 run（初始只 seed 当前 prompt），跨消息即丢上文。此处把
+        最近 N 轮 (用户指令, 最终回复) 以真实对话形式拼进初始 messages，模型即可延续
+        「先抛主题、再追加动作」的多轮语境。超长回复按上限截断（对话只需记得做过什么，
+        综述全文另存工件）。加载失败退回空历史，绝不阻断建 run。
+        """
+        try:
+            async with self._session_factory() as s:
+                turns = await repo.list_recent_dialog(
+                    s, project_id,
+                    exclude_run_id=exclude_run_id,
+                    max_turns=_HISTORY_MAX_TURNS,
+                )
+        except Exception:  # noqa: BLE001 — 历史加载失败退回单轮，不阻断建 run
+            logger.exception(
+                "[RunController] 加载多轮历史失败 project_id=%s", project_id,
+            )
+            return []
+
+        msgs: list[dict] = []
+        for user_turn, assistant_turn in turns:
+            u = _truncate_history(user_turn, _HISTORY_USER_MAX_CHARS)
+            a = _truncate_history(assistant_turn, _HISTORY_ASSISTANT_MAX_CHARS)
+            if not u or not a:
+                continue
+            msgs.append({"role": "user", "content": u})
+            msgs.append({"role": "assistant", "content": a})
+        return msgs
 
     async def _project_block(self, project_id: int) -> str:
         """构建"当前项目身份"提示块，拼到 system prompt 后。
