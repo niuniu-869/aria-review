@@ -13,16 +13,15 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   useBackfillMetadata,
-  useBackfillFulltext,
   useExtractStructured,
   useImportPapers,
   usePatchInclusion,
   useProject,
   useProjectPapers,
 } from "../api/agentHooks";
-import type { BackfillMetadataResult, ExtractStructuredResult, FulltextBackfillResult, ProjectPaperItem } from "../api/client";
-import { useSciverseSettings } from "../api/useSciverseSettings";
+import type { BackfillMetadataResult, ExtractStructuredResult, ProjectPaperItem } from "../api/client";
 import { useLibraryListState } from "../hooks/useLibraryListState";
+import { useProjectFulltextBackfill } from "../hooks/useProjectFulltextBackfill";
 export type { ExtractionFilter, SortDir, SortField, StatusFilter } from "../hooks/useLibraryListState";
 import { ErrMsg, Loading } from "../lib/ui";
 import { ImportDialog } from "./library/ImportDialog";
@@ -41,14 +40,25 @@ export function LibraryView() {
   const patch = usePatchInclusion(pidNum);
   const importMut = useImportPapers(pidNum);
   const backfillMut = useBackfillMetadata(pidNum);
-  const fulltextBackfillMut = useBackfillFulltext(pidNum);
+  const fulltextBackfill = useProjectFulltextBackfill(pidNum);
   const extractMut = useExtractStructured(pidNum);
-  const { settings: sciverse } = useSciverseSettings();
 
   // ---- AI 动作反馈状态 ----
   const [backfillResult, setBackfillResult] = useState<BackfillMetadataResult | null>(null);
-  const [fulltextBackfillResult, setFulltextBackfillResult] = useState<FulltextBackfillResult | null>(null);
   const [extractResult, setExtractResult] = useState<ExtractStructuredResult | null>(null);
+
+  // F-09: 反馈横幅 15s 后自动消失（结果变化时重置计时，卸载时清理）；手动 × 关闭不受影响
+  useEffect(() => {
+    if (!backfillResult) return;
+    const timer = setTimeout(() => setBackfillResult(null), 15_000);
+    return () => clearTimeout(timer);
+  }, [backfillResult]);
+
+  useEffect(() => {
+    if (!extractResult) return;
+    const timer = setTimeout(() => setExtractResult(null), 15_000);
+    return () => clearTimeout(timer);
+  }, [extractResult]);
 
   // ---- 选中详情的 paperId（URL 同步） ----
   const [selectedPaperId, setSelectedPaperId] = useState<number | null>(
@@ -94,41 +104,6 @@ export function LibraryView() {
     patchInclusion: (paperId, status) => patch.mutateAsync({ paperId, inclusionStatus: status }),
   });
 
-  const runProjectFulltextBackfill = useCallback(async () => {
-    setFulltextBackfillResult(null);
-    fulltextBackfillMut.reset();
-    const aggregate: FulltextBackfillResult = {
-      total: 0,
-      fetched: 0,
-      failed: [],
-      skipped: 0,
-      remaining: 0,
-    };
-    let remaining: number | null = null;
-    for (let i = 0; i < 20; i += 1) {
-      // 已失败项传给后端排除：避免失败项每轮占据前排、饿死后续候选（codex 复核 P2）
-      const excludePaperIds = aggregate.failed.map((f) => f.paperId);
-      const batch = await fulltextBackfillMut.mutateAsync({
-        maxPapers: 50,
-        excludePaperIds: excludePaperIds.length > 0 ? excludePaperIds : undefined,
-        sciverse: {
-          apiToken: sciverse.apiToken || undefined,
-          baseUrl: sciverse.baseUrl || undefined,
-        },
-      });
-      // total 取首轮全量；fetched/failed 跨轮累加；skipped/remaining 取最新一轮（非累加口径）
-      if (i === 0) aggregate.total = batch.total;
-      aggregate.fetched += batch.fetched;
-      aggregate.skipped = batch.skipped;
-      aggregate.failed = aggregate.failed.concat(batch.failed ?? []);
-      aggregate.remaining = batch.remaining;
-      setFulltextBackfillResult({ ...aggregate, failed: [...aggregate.failed] });
-      const madeProgress = batch.fetched + (batch.failed?.length ?? 0) > 0;
-      if (batch.remaining <= 0 || !madeProgress || batch.remaining === remaining) break;
-      remaining = batch.remaining;
-    }
-  }, [fulltextBackfillMut, sciverse.apiToken, sciverse.baseUrl]);
-
   if (isLoading) return <Loading label="加载文献库…" />;
   if (error) return <ErrMsg error={error} />;
 
@@ -168,13 +143,22 @@ export function LibraryView() {
       {/* 导入弹层 */}
       {showImport && (
         <ImportDialog
+          projectId={pidNum}
           importing={importMut.isPending}
           result={importMut.data}
           error={importMut.error}
-          onImport={(files, defaultStatus) => importMut.mutate({ files, defaultStatus })}
+          onImport={(files, defaultStatus) => importMut.mutate({ files, defaultStatus }, {
+            // F-09: 导入完成后清掉旧的补全/抽取反馈横幅，避免过期结果误导
+            onSuccess: () => {
+              setBackfillResult(null);
+              setExtractResult(null);
+            },
+          })}
           onClose={() => {
             setShowImport(false);
             importMut.reset();
+            setBackfillResult(null);
+            setExtractResult(null);
           }}
         />
       )}
@@ -214,13 +198,13 @@ export function LibraryView() {
             extractionFilter={listState.extractionFilter}
             onExtractionFilter={listState.setExtractionFilter}
             isBackfilling={backfillMut.isPending}
-            isFulltextBackfilling={fulltextBackfillMut.isPending}
+            isFulltextBackfilling={fulltextBackfill.isPending}
             isExtracting={extractMut.isPending}
             backfillResult={backfillResult}
-            fulltextBackfillResult={fulltextBackfillResult}
+            fulltextBackfillResult={fulltextBackfill.result}
             extractResult={extractResult}
             backfillError={backfillMut.error}
-            fulltextBackfillError={fulltextBackfillMut.error}
+            fulltextBackfillError={fulltextBackfill.error}
             extractError={extractMut.error}
             onBackfill={() => {
               setBackfillResult(null);
@@ -230,7 +214,7 @@ export function LibraryView() {
               });
             }}
             onFulltextBackfill={() => {
-              void runProjectFulltextBackfill().catch(() => undefined);
+              void fulltextBackfill.run().catch(() => undefined);
             }}
             onExtract={() => {
               setExtractResult(null);
@@ -240,7 +224,7 @@ export function LibraryView() {
               });
             }}
             onClearBackfillResult={() => setBackfillResult(null)}
-            onClearFulltextBackfillResult={() => setFulltextBackfillResult(null)}
+            onClearFulltextBackfillResult={fulltextBackfill.reset}
             onClearExtractResult={() => setExtractResult(null)}
           />
         </div>

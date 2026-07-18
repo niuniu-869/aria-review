@@ -76,7 +76,7 @@ describe("useAgentRunStream", () => {
     expect(result.current.searchResult?.candidates).toHaveLength(2);
     expect(result.current.searchResult?.partial).toBe(true);
     expect(result.current.showFollowUps).toBe(true);
-    expect(onRunComplete).toHaveBeenCalledWith({ runId: "run-1", finalOutput: "## 完成", eventSeq: 3 });
+    expect(onRunComplete).toHaveBeenCalledWith({ runId: "run-1", finalOutput: "## 完成", eventSeq: 3, status: "done" });
     expect(createRunSpy).toHaveBeenCalledWith(
       1,
       { prompt: "分析文献", autoConfirm: true },

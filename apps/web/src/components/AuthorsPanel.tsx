@@ -14,11 +14,11 @@ import { buildAuthorHeatmapOption } from "./viz/advancedCharts";
 import type { AuthorProductionData } from "./viz/advancedCharts";
 
 // DataTable 约束：本地行类型加索引签名（结构同 schema）
-type AuthorRow = { author: string; articles: number; [k: string]: unknown };
+type AuthorRow = { author?: string | null; articles?: number | null; [k: string]: unknown };
 // A4: hIndex 行加 g/m/tc 可选列
 type HRow = {
-  author: string;
-  h: number;
+  author?: string | null;
+  h?: number | null;
   g?: number | null;
   m?: number | null;
   tc?: number | null;
@@ -26,8 +26,8 @@ type HRow = {
 };
 
 const topCols: DataTableColumn<AuthorRow>[] = [
-  { key: "author", label: "作者", sortable: true },
-  { key: "articles", label: "论文数", align: "right", sortable: true },
+  { key: "author", label: "作者", sortable: true, format: (v) => textFallback(v) },
+  { key: "articles", label: "论文数", align: "right", sortable: true, format: (v) => numDash(v) },
 ];
 
 /** 缺失/null 显示「—」（不显示 0，避免误导；m=null 同理） */
@@ -35,9 +35,14 @@ function numDash(v: unknown): string {
   return v == null ? "—" : String(v);
 }
 
+/** R 文本缺失时统一显示兜底，避免空白单元格。 */
+function textFallback(v: unknown): string {
+  return typeof v === "string" && v.trim() ? v : "未标注";
+}
+
 const hCols: DataTableColumn<HRow>[] = [
-  { key: "author", label: "作者", sortable: true },
-  { key: "h", label: "H 指数", align: "right", sortable: true },
+  { key: "author", label: "作者", sortable: true, format: (v) => textFallback(v) },
+  { key: "h", label: "H 指数", align: "right", sortable: true, format: (v) => numDash(v) },
   // A4 g/m/tc：缺失显示「—」
   { key: "g", label: "g 指数", align: "right", sortable: true, format: (v) => numDash(v) },
   { key: "m", label: "m 指数", align: "right", sortable: true, format: (v) => numDash(v) },
@@ -134,7 +139,12 @@ export function AuthorsPanel({ projectId, corpusId }: { projectId: string; corpu
   );
 
   const beta = data?.lotka?.beta;
-  const dist = useMemo<LotkaPoint[]>(() => data?.lotka?.distribution ?? [], [data]);
+  const dist = useMemo<LotkaPoint[]>(
+    () => (data?.lotka?.distribution ?? []).filter(
+      (p): p is LotkaPoint => typeof p.articles === "number" && typeof p.authors === "number",
+    ),
+    [data],
+  );
   // 有效性：beta 为正数 + distribution 非空 + 所有 articles>0（防 C/x^β 出 Infinity/NaN）
   const lotkaReady =
     typeof beta === "number" && beta > 0 && dist.length > 0 && dist.every((p) => p.articles > 0);

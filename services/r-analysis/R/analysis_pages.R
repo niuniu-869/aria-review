@@ -2,8 +2,8 @@
 # DTOs for source, author and document analysis pages.
 
 sources_dto <- function(M, top = 20L) {
-  if (!is.data.frame(M) || nrow(M) == 0L) stop("sources_dto: empty corpus")
-  if (!"SO" %in% names(M)) stop("sources_dto: missing SO")
+  if (!is.data.frame(M) || nrow(M) == 0L) stop("DATA_QUALITY|sources_dto: 语料为空")
+  if (!"SO" %in% names(M)) stop("DATA_QUALITY|sources_dto: 语料缺来源刊字段(SO)")
   top <- max(1L, as.integer(top))
 
   so <- utils::head(sort(table(M$SO), decreasing = TRUE), top)
@@ -52,8 +52,8 @@ sources_dto <- function(M, top = 20L) {
 }
 
 authors_dto <- function(M, top = 20L) {
-  if (!is.data.frame(M) || nrow(M) == 0L) stop("authors_dto: empty corpus")
-  if (!"AU" %in% names(M)) stop("authors_dto: missing AU")
+  if (!is.data.frame(M) || nrow(M) == 0L) stop("DATA_QUALITY|authors_dto: 语料为空")
+  if (!"AU" %in% names(M)) stop("DATA_QUALITY|authors_dto: 语料缺作者字段(AU)")
   top <- max(1L, as.integer(top))
 
   res <- bibliometrix::biblioAnalysis(M, sep = ";")
@@ -125,7 +125,7 @@ authors_dto <- function(M, top = 20L) {
 }
 
 documents_dto <- function(M, top = 20L) {
-  if (!is.data.frame(M) || nrow(M) == 0L) stop("documents_dto: empty corpus")
+  if (!is.data.frame(M) || nrow(M) == 0L) stop("DATA_QUALITY|documents_dto: 语料为空")
   top <- max(1L, as.integer(top))
 
   tc <- if ("TC" %in% names(M)) suppressWarnings(as.numeric(M$TC)) else rep(NA_real_, nrow(M))

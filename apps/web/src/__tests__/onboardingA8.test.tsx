@@ -37,6 +37,8 @@ vi.mock("../api/agentHooks", async (importOriginal) => {
     ...actual,
     useProjects: mockUseProjects,
     useCreateProject: () => ({ mutateAsync: vi.fn(), isPending: false }),
+    useRenameProject: () => ({ mutateAsync: vi.fn(), isPending: false }),
+    useDeleteProject: () => ({ mutateAsync: vi.fn(), isPending: false }),
   };
 });
 

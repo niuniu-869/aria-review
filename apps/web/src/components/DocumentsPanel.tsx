@@ -76,23 +76,28 @@ function buildWordCloudOption(keywords: Keyword[]): EChartsOption {
 // ---------------------------------------------------------------------------
 
 type CitedRow = {
-  title: string | null;
-  author: string | null;
-  year: number | null;
-  cited: number;
+  title?: string | null;
+  author?: string | null;
+  year?: number | null;
+  cited?: number | null;
   [k: string]: unknown;
 };
 
-/** null/空显示「—」 */
+/** 文本 null/空显示兜底。 */
 function dash(v: unknown): string {
-  return v == null || v === "" ? "—" : String(v);
+  return v == null || v === "" ? "未标注" : String(v);
+}
+
+/** 缺失数值显示「—」，避免把未知误作 0。 */
+function numDash(v: unknown): string {
+  return v == null ? "—" : String(v);
 }
 
 const citedCols: DataTableColumn<CitedRow>[] = [
   { key: "title", label: "标题", format: (v) => dash(v) },
   { key: "author", label: "作者", format: (v) => dash(v) },
   { key: "year", label: "年份", align: "right", sortable: true, format: (v) => dash(v) },
-  { key: "cited", label: "被引", align: "right", sortable: true },
+  { key: "cited", label: "被引", align: "right", sortable: true, format: (v) => numDash(v) },
 ];
 
 // 关键词频次兜底表（词云不可用时用）
@@ -103,10 +108,10 @@ const keywordCols: DataTableColumn<KeywordRow>[] = [
 ];
 
 // A4: 高被引参考文献表（参考文献 | 次数）
-type CitedRefRow = { ref: string; count: number; [k: string]: unknown };
+type CitedRefRow = { ref?: string | null; count?: number | null; [k: string]: unknown };
 const citedRefCols: DataTableColumn<CitedRefRow>[] = [
-  { key: "ref", label: "参考文献", sortable: true },
-  { key: "count", label: "被引次数", align: "right", sortable: true },
+  { key: "ref", label: "参考文献", sortable: true, format: (v) => dash(v) },
+  { key: "count", label: "被引次数", align: "right", sortable: true, format: (v) => numDash(v) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -118,7 +123,13 @@ export function DocumentsPanel({ projectId, corpusId }: { projectId: string; cor
   const err = isError ? error : undefined;
   const chartRef = useRef<EChartHandle>(null);
 
-  const keywords = useMemo<Keyword[]>(() => data?.keywords ?? [], [data]);
+  const keywords = useMemo<Keyword[]>(
+    () => (data?.keywords ?? []).map((item) => ({
+      term: item.term?.trim() || "未标注",
+      freq: item.freq ?? 0,
+    })),
+    [data],
+  );
   const hasKeywords = keywords.length > 0;
 
   // 词云惰性注册状态：null=探测中 / true=可用 / false=不可用（jsdom 等）

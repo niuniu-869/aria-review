@@ -30,7 +30,7 @@ test_that("documents_dto 高被引降序 + 关键词", {
 })
 
 test_that("空语料报错", {
-  expect_error(sources_dto(data.frame()), "empty")
-  expect_error(authors_dto(data.frame()), "empty")
-  expect_error(documents_dto(data.frame()), "empty")
+  expect_error(sources_dto(data.frame()), "DATA_QUALITY\\|")
+  expect_error(authors_dto(data.frame()), "DATA_QUALITY\\|")
+  expect_error(documents_dto(data.frame()), "DATA_QUALITY\\|")
 })

@@ -29,7 +29,10 @@ import {
 } from "../api/agentHooks";
 import { RUN_STATUS_DONE } from "../api/runStatus";
 import { useArtifactCanvas } from "../hooks/useArtifactCanvas";
+import { useProjectReadiness } from "../hooks/useProjectReadiness";
+import { useQueryClient } from "@tanstack/react-query";
 import { AgentChat } from "../components/AgentChat";
+import { SearchNextStepCard } from "../components/SearchNextStepCard";
 import { ArtifactCard } from "../components/ArtifactCard";
 import { ArtifactCanvas } from "../components/ArtifactCanvas";
 import { LibraryStatusBar } from "../components/LibraryStatusBar";
@@ -37,6 +40,7 @@ import { TrustCard } from "../components/TrustCard";
 import { EmptyGuide } from "../components/EmptyGuide";
 import { TrustBadgeStrip } from "../components/TrustBadgeStrip";
 import { ErrMsg, Loading } from "../lib/ui";
+import { track } from "../lib/track";
 import type { FillPayload } from "../components/PresetLauncher";
 
 export function ChatWorkbench() {
@@ -44,10 +48,21 @@ export function ChatWorkbench() {
   const pidNum = Number(pid);
   const navigate = useNavigate();
   const { data } = useProject(pidNum);
+  const queryClient = useQueryClient();
+  // S7: 检索 run 完成后的下一步推荐卡；关闭后本次会话不再弹出。
+  const [showSearchNextStep, setShowSearchNextStep] = useState(false);
+  const searchNextStepDismissedRef = useRef(false);
 
   // W1: 文献库统计
   const { data: projectStats } = useProjectLibraryStats(pidNum);
   const { data: globalStats } = useGlobalLibraryStats();
+
+  // F-12: 项目详情本身无 OCR 计数，补入文献库统计的 ocr.done，
+  // 让 readiness 能区分「已纳入但未解析全文」（见 useProjectReadiness not_parsed）。
+  const readiness = useProjectReadiness(
+    data ? { ...data, ocrDoneCount: projectStats?.ocr.done ?? null } : undefined,
+    pidNum,
+  );
 
   // 已 pin 工件（跨会话恢复，侧栏展示）
   const {
@@ -68,6 +83,12 @@ export function ChatWorkbench() {
     const latestDone = runsData?.runs?.find((r) => r.status === RUN_STATUS_DONE);
     if (latestDone) setTrustRunId(Number(latestDone.runId));
   }, [runsData]);
+
+  // F-07: 最近 done 的至多 3 条 run（列表新→旧），传给 AgentChat 渲染只读「历史运行」区
+  const historyRunIds = (runsData?.runs ?? [])
+    .filter((r) => r.status === RUN_STATUS_DONE)
+    .slice(0, 3)
+    .map((r) => Number(r.runId));
 
   const artifactCanvas = useArtifactCanvas(pidNum);
 
@@ -143,10 +164,31 @@ export function ChatWorkbench() {
             {/* W4 Task 7: fillPrompt prop 注入预设/建议追问文本（不自动发送） */}
             <AgentChat
               projectId={pidNum}
+              readiness={readiness}
               fillPrompt={fillPrompt}
-              onRunStart={() => setHasActivity(true)}
+              historyRunIds={historyRunIds}
+              onRunStart={({ entry }) => {
+                setHasActivity(true);
+                setShowSearchNextStep(false);
+                if (entry === "search") track("search_run_start", { entry }, pidNum);
+              }}
               onRunComplete={(info) => {
                 setHasRun(true);
+                if (info.entry === "search") {
+                  track("search_run_done", { entry: info.entry, status: info.status }, pidNum);
+                  // 检索可能已入库新文献：失效项目/库统计，让 readiness 与状态栏拿到新数据。
+                  // codex 复核 P1：须等重拉完成再显示推荐卡，否则会按旧 readiness 闪错文案并误报曝光。
+                  const refreshed = Promise.all([
+                    queryClient.invalidateQueries({ queryKey: ["project", pidNum] }),
+                    queryClient.invalidateQueries({ queryKey: ["projectLibraryStats", pidNum] }),
+                    queryClient.invalidateQueries({ queryKey: ["projectPapers", pidNum] }),
+                  ]);
+                  if (info.status === "done" && !searchNextStepDismissedRef.current) {
+                    void refreshed.finally(() => {
+                      if (!searchNextStepDismissedRef.current) setShowSearchNextStep(true);
+                    });
+                  }
+                }
                 // Phase 2: 新跑完的 run 覆盖历史 run（且后续不再被 runs 列表回拉覆盖）
                 trustPinnedRef.current = true;
                 setTrustRunId(Number(info.runId));
@@ -154,6 +196,20 @@ export function ChatWorkbench() {
               }}
             />
           </div>
+
+          {/* S7: 检索完成时刻的状态化下一步推荐（readiness 驱动，可关闭） */}
+          {showSearchNextStep && readiness && (
+            <div style={{ marginTop: "1rem" }}>
+              <SearchNextStepCard
+                projectId={pidNum}
+                readiness={readiness}
+                onClose={() => {
+                  searchNextStepDismissedRef.current = true;
+                  setShowSearchNextStep(false);
+                }}
+              />
+            </div>
+          )}
 
           {/* 本次 run 产出的工件卡（本次会话） */}
           {localOnly.length > 0 && (

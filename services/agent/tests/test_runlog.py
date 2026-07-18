@@ -100,10 +100,71 @@ async def test_tool_invocations_aggregated_in_order(session):
     ])
     await session.commit()
     log = await build_runlog(session, r.id)
-    assert log["manifest"]["tool_invocation_count"] == 2
+    # F-13：tool_invocation_count 计 rounds_log 实际工具调用（本 run 无 rounds_log → 0），
+    # ToolInvocation 写审计行仍按 id 升序聚合在 tool_invocations 列表
+    assert log["manifest"]["tool_invocation_count"] == 0
     keys = [t["idempotency_key"] for t in log["tool_invocations"]]
     assert keys == ["k1", "k2"]
     assert log["tool_invocations"][0]["tool_id"] == "review"
+
+
+@pytest.mark.asyncio
+async def test_tool_invocation_count_counts_rounds_log_tool_calls(session):
+    """F-13：manifest.tool_invocation_count = 各轮 rounds_log tool_calls 之和，
+    且 verify_runlog 的 manifest_counts 能从 runlog 内容自洽复算。"""
+    from app.agent.runlog_verify import verify_runlog
+    from app.harness.engine import LoopState
+
+    p = await create_project(session, {"name": "P4b"})
+    r = await create_run(session, project_id=p.id)
+    state = LoopState(
+        messages=[{"role": "user", "content": "x"}],
+        rounds_log=[
+            {"round": 1, "tool_calls": [{"name": "a"}, {"name": "b"}]},
+            {"round": 2, "tool_calls": [{"name": "c"}]},
+            {"round": 3, "thinking": "done", "tool_calls": []},
+        ],
+    )
+    await save_state(session, r.id, state)
+    log = await build_runlog(session, r.id)
+    assert log["manifest"]["tool_invocation_count"] == 3
+    assert log["rounds_log"][0]["tool_calls"][0]["name"] == "a"
+    rep = verify_runlog(log)
+    assert rep.checks["manifest_counts"] is True, rep.errors
+
+
+@pytest.mark.asyncio
+async def test_verify_runlog_legacy_without_rounds_log(session):
+    """codex 二审 P1：旧版 runlog/v1（无 rounds_log 键）按 tool_invocations 长度复算，
+    内容正确的旧日志 manifest_counts 不得误判 False。"""
+    from app.agent.runlog_verify import verify_runlog
+
+    p = await create_project(session, {"name": "P-legacy"})
+    r = await create_run(session, project_id=p.id)
+    log = await build_runlog(session, r.id)
+    # 模拟本迭代前导出的旧日志：无 rounds_log 键，manifest 计数按 tool_invocations 语义
+    legacy = {k: v for k, v in log.items() if k != "rounds_log"}
+    n_write = len(legacy.get("tool_invocations") or [])
+    legacy["manifest"] = {**legacy["manifest"], "tool_invocation_count": n_write}
+    rep = verify_runlog(legacy)
+    assert rep.checks["manifest_counts"] is True, rep.errors
+
+
+@pytest.mark.asyncio
+async def test_model_used_prefers_state_over_rounds_log(session):
+    """F-08：state.model_used 是权威值；rounds_log 的 "model" 键仅作回退。"""
+    from app.harness.engine import LoopState
+
+    p = await create_project(session, {"name": "P-model"})
+    r = await create_run(session, project_id=p.id)
+    state = LoopState(
+        messages=[{"role": "user", "content": "x"}],
+        rounds_log=[{"round": 1, "tool_calls": []}],  # 无 "model" 键（engine 现状）
+        model_used="deepseek-chat",
+    )
+    await save_state(session, r.id, state)
+    log = await build_runlog(session, r.id)
+    assert log["run"]["model_used"] == "deepseek-chat"
 
 
 @pytest.mark.asyncio

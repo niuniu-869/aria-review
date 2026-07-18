@@ -149,3 +149,35 @@ def test_social_limit_passthrough(client, fake_r):
     r = client.get(f"/projects/p/corpus/{cid}/social?limit=50")
     assert r.status_code == 200
     assert seen["limit"] == 50
+
+
+def test_a5_and_network_null_items_return_200(client, fake_r):
+    """A5 信封及网络 DTO 的 R 数据叶子为 null 时应保持 HTTP 200。"""
+    cid = _mk(client)
+
+    async def thematic_with_null(_corpus_id):
+        return 200, {
+            "available": True, "schemaVersion": 1, "corpusId": cid,
+            "data": {"clusters": [{"label": None, "centrality": None,
+                                     "density": None, "freq": None}]},
+        }
+
+    async def conceptual_with_null(_corpus_id, limit=100):
+        return 200, {
+            "schemaVersion": 1, "corpusId": cid, "network": None,
+            "graph": {
+                "nodes": [{"id": None, "label": None, "value": None}],
+                "edges": [{"source": None, "target": None, "weight": None}],
+            },
+        }
+
+    fake_r.get_thematic = thematic_with_null
+    fake_r.get_conceptual = conceptual_with_null
+
+    thematic = client.get(f"/projects/p/corpus/{cid}/conceptual/thematic")
+    conceptual = client.get(f"/projects/p/corpus/{cid}/conceptual")
+
+    assert thematic.status_code == 200
+    assert thematic.json()["data"]["clusters"][0]["label"] is None
+    assert conceptual.status_code == 200
+    assert conceptual.json()["graph"]["nodes"][0]["id"] is None

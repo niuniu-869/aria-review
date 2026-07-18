@@ -57,6 +57,17 @@ _AUTHOR_LINE_RE = re.compile(
     r"^(?:Authors?|Author\(s\))\s*[：:]\s*(.+)$",
     re.IGNORECASE | re.MULTILINE,
 )
+# F-04: 期刊 logo 等图片/链接行（整行形如 ![](images/xx.jpg)、[xx](yy) 或裸图片路径），
+# 作者行挑选前剔除，防止 logo 行被误抽为作者。
+_IMAGE_LIKE_LINE_RE = re.compile(
+    r"^!?\[[^\]]*\]\([^)]*\)$|^(?:[\w.-]+/)*[\w.-]+\.(?:jpe?g|png|gif|svg)$",
+    re.IGNORECASE,
+)
+# F-04: 人名片段中不允许出现图片/链接残留
+_NOT_A_PERSON_RE = re.compile(
+    r"!\[|\]\(|images?/|\.(?:jpe?g|png|gif|svg)",
+    re.IGNORECASE,
+)
 _HEX_PREFIX_RE = re.compile(r"^[0-9a-fA-F]{16,64}$")
 _SHORT_CODE_RE = re.compile(r"^[A-Z0-9._-]{2,12}$")
 _SECTION_TITLE_RE = re.compile(
@@ -88,7 +99,12 @@ def _split_people(raw: str) -> list[dict]:
     if not raw:
         return []
     parts = re.split(r"[,;，；]+", raw)
-    return [{"literal": p.strip()} for p in parts if p.strip()]
+    # F-04: 剔除含图片/链接残留的片段（如 logo 行残片），绝不入库为作者
+    return [
+        {"literal": p.strip()}
+        for p in parts
+        if p.strip() and not _NOT_A_PERSON_RE.search(p)
+    ]
 
 
 def _normalize_keywords(raw: str) -> str:
@@ -153,18 +169,27 @@ def _extract_metadata_from_markdown(markdown: str) -> dict:
 
     # 作者行（可能在前几行）
     m = _AUTHOR_LINE_RE.search(markdown[:3000])  # 只看前 3000 字符
-    if m:
-        meta["creators"] = _split_people(m.group(1))
+    creators = _split_people(m.group(1)) if m else []
+    if creators:
+        meta["creators"] = creators
     elif title_match:
         # MinerU 常把标题下一行作者直接输出为普通段落，没有 Authors: 前缀。
         tail = markdown[title_match.end(): title_match.end() + 1000]
-        lines = [line.strip() for line in tail.splitlines() if line.strip()]
-        if lines:
-            first = lines[0]
-            if not first.lower().startswith(("abstract", "keywords", "introduction")):
-                creators = _split_people(first)
-                if creators:
-                    meta["creators"] = creators
+        # F-04: 跳过 logo 图片/链接行（防 ![](images/xx.jpg) 被当成作者行）；
+        # 遇到下一个标题即止——作者只可能出现在标题与首节标题之间。
+        first = None
+        for line in tail.splitlines():
+            line = line.strip()
+            if not line or _IMAGE_LIKE_LINE_RE.match(line):
+                continue
+            if line.startswith("#"):
+                break
+            first = line
+            break
+        if first and not first.lower().startswith(("abstract", "keywords", "introduction")):
+            creators = _split_people(first)
+            if creators:
+                meta["creators"] = creators
 
     return meta
 

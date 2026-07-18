@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.agent import entries as E
 from app.agent.context import AgentContext
-from app.agent.prompts import AGENT_SYSTEM, GAP_SYSTEM, REVIEW_SYSTEM, SEARCH_SYSTEM
+from app.agent.prompts import AGENT_SYSTEM, GAP_SYSTEM, REVIEW_SYSTEM, SEARCH_SYSTEM, WRAP_UP
 from app.agent.run_controller import RunController
 from app.harness.events import SubscribableEventPublisher
 from app.harness.llm import LLMRouter
@@ -75,6 +75,14 @@ def test_entry_system_prompt_mapping():
     assert E.entry_system_prompt("search") == SEARCH_SYSTEM
     assert E.entry_system_prompt("review") == REVIEW_SYSTEM
     assert E.entry_system_prompt("gap") == GAP_SYSTEM
+
+
+def test_entry_prompts_enforce_user_facing_boundaries():
+    assert "【搜索】入口" in GAP_SYSTEM
+    assert "【综述】入口" in GAP_SYSTEM
+    assert "不要承诺" in GAP_SYSTEM
+    assert "项目语料为空" in GAP_SYSTEM
+    assert "不要输出内部思考、计划或自我对话" in WRAP_UP
 
 
 def test_referenced_tool_ids_are_registered():

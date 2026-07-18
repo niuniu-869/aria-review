@@ -41,6 +41,12 @@ export type ValueThresholds = Schemas["ValueThresholds"];
 export type ValueVerdict = Schemas["ValueVerdict"];
 /** GET .../verdict 返回体：裁决 + 证据包 */
 export type GapVerdictResult = Schemas["GapVerdictResult"];
+/** 可行性裁决（状态机：buildable | hard | blocked） */
+export type FeasibilityVerdict = Schemas["FeasibilityVerdict"];
+/** 可行性侦察证据包 */
+export type FeasibilityPack = Schemas["FeasibilityPack"];
+/** GET .../feasibility-verdict 返回体 */
+export type GapFeasibilityVerdictResult = Schemas["GapFeasibilityVerdictResult"];
 
 /** 本 run 实时工作记忆快照 */
 export type ScratchpadState = Schemas["ScratchpadState"];
@@ -49,6 +55,8 @@ export type ScratchpadState = Schemas["ScratchpadState"];
 export type GapDiscoverAccepted = Schemas["GapDiscoverAccepted"];
 /** :verify 202 受理体 */
 export type GapVerifyAccepted = Schemas["GapVerifyAccepted"];
+/** :feasibility 202 受理体 */
+export type GapFeasibilityAccepted = Schemas["GapFeasibilityAccepted"];
 /** HITL 决策请求体 */
 export type GapPatchRequest = Schemas["GapPatchRequest"];
 /** HITL 决策动作：accept | reject | revise */

@@ -301,6 +301,12 @@ async def verify_gap_feasibility(
     gap_id = str(gap.get("gap_id") or "")
     statement = str(gap.get("statement") or "")
     theme = str(gap.get("theme") or "")
+    # 生产 job 18 实证：不显式给白名单，scout 会拿 search 结果里的外部 paper_id 去
+    # read_paper（必失败），3 次失败+未提交即 fail-loud。白名单=GAP 支撑文献的项目内 id。
+    supporting_ids = [
+        sp.get("paper_id") for sp in (gap.get("supporting_papers") or [])
+        if isinstance(sp, dict) and sp.get("paper_id") is not None
+    ]
 
     task = (
         f"针对以下研究空白（GAP）做**可行性侦察**（不是新颖性）：判断这个方向**做不做得出来**，"
@@ -309,7 +315,9 @@ async def verify_gap_feasibility(
         f"把论断**拆成方法要素与数据要素的组件词**去检索（方法家族/工具/模型/库/数据类型），"
         f"**严禁把整句 GAP 论断或「A×B 是否被研究」拼进 query**（那是 novelty 的事，会泄漏进可行性）。"
         f"评估：数据可得性（有明确可访问证据才算 available）、方法组件基座（≥2 条可复用组件）、"
-        f"资源规模、负证据（数据不可得/无可行测量/不可识别）。"
+        f"资源规模、负证据（数据不可得/无可行测量/不可识别）。\n"
+        f"read_paper 白名单（仅这些项目内 paper_id 可读，通常无需读）：{supporting_ids or '（空）'}；"
+        f"search 检索结果中的文献一律**不可** read_paper——它们不在本项目内，直接把检索摘要记为证据。"
     )
     result = await dispatch_to_skill(
         skill_id=FEASIBILITY_SCOUT_SKILL,

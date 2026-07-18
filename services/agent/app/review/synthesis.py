@@ -1033,3 +1033,85 @@ def build_provenance_and_anchors(
 
     annotated_md = _CITATION_RE.sub(_replace, review_md)
     return annotated_md, provenance_map
+
+
+def backfill_evidence_anchors(
+    evidence_refs: list,
+    summaries: "list[PaperSummary]",
+    records: list[dict],
+) -> int:
+    """把 map 阶段已定位 key_points 的块级锚点回填到同篇 EvidenceRef（F-18）。
+
+    背景：EvidenceRef.from_record 不填 page_no/block_idx/bbox/section_title/anchor_id
+    （恒 None），而 map 阶段 EvidenceResolver 已把 key_point 定位回 block。这里按
+    paper_id 把两者接上，让证据快照带上可审计的原文坐标。
+
+    匹配与消歧（与 build_provenance_and_anchors 同口径）：
+      - ref.paper_id → records 行（取 idx，兼容 paper_id 为真实 DB id 或旧版 idx）→
+        summaries[idx-1] 的已定位 key_points（kp.block_idx is not None 且 kp.anchor_id）；
+      - 多条候选时用 ref.claim/span 与 kp.claim/source_quote 的 token 重叠度挑最优；
+      - 仅 1 条候选时直接采用（无歧义）；多候选且无 token 重叠 → 不填
+        （零伪造，绝不在多候选里乱指一个 block）。
+
+    无 DocumentStructure（key_points 未定位）的论文保持 None（现状不变，防御性）。
+    原地修改 evidence_refs，返回回填条数。
+    """
+    if not evidence_refs or not summaries:
+        return 0
+
+    # records 行：paper_id（真实 DB id）与 idx（1-based 引用序号）都索引到 idx，
+    # 兼容 EvidenceRef.paper_id 两种取值（codex P1-3 优先真实 DB id，旧 records 回退 idx）。
+    idx_by_paper_id: dict[str, int] = {}
+    for r in records or []:
+        ridx = r.get("idx")
+        if ridx is None:
+            continue
+        try:
+            ridx = int(ridx)
+        except (TypeError, ValueError):
+            continue
+        for key in (r.get("paper_id"), ridx):
+            if key is not None:
+                idx_by_paper_id[str(key)] = ridx
+
+    filled = 0
+    for ref in evidence_refs:
+        # 幂等：已带块级锚点的跳过（from_record 正常路径恒 None）
+        if getattr(ref, "block_idx", None) is not None or getattr(ref, "anchor_id", None):
+            continue
+        idx = idx_by_paper_id.get(str(getattr(ref, "paper_id", None)))
+        if idx is None or not (1 <= idx <= len(summaries)):
+            continue
+        located = [
+            kp for kp in (summaries[idx - 1].key_points or [])
+            if kp.block_idx is not None and kp.anchor_id
+        ]
+        if not located:
+            continue
+
+        ref_tokens = set(_tokenize(
+            f"{getattr(ref, 'claim', '') or ''} {getattr(ref, 'span', '') or ''}"
+        ))
+        best_kp = None
+        best_overlap = 0
+        for kp in located:
+            kp_tokens = set(_tokenize(f"{kp.claim or ''} {kp.source_quote or ''}"))
+            overlap = len(ref_tokens & kp_tokens)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_kp = kp  # tie → 先出现者（严格大于才更新）
+
+        # 零伪造消歧：无重叠时仅单候选可采信，多候选不乱指。
+        if best_kp is None:
+            if len(located) == 1:
+                best_kp = located[0]
+            else:
+                continue
+
+        ref.page_no = best_kp.page_no
+        ref.block_idx = best_kp.block_idx
+        ref.bbox = best_kp.bbox
+        ref.section_title = best_kp.section_title
+        ref.anchor_id = best_kp.anchor_id
+        filled += 1
+    return filled

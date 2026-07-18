@@ -61,6 +61,33 @@ async def create_project_dto(
     }
 
 
+async def delete_project_dto(s: AsyncSession, project_id: int) -> None:
+    """删除项目；不存在 → 404。子表由 DB ondelete=CASCADE 级联，Paper 共享实体不受影响。"""
+    ok = await proj_repo.delete_project(s, project_id)
+    if not ok:
+        raise ApiError(404, "PROJECT_NOT_FOUND", f"项目 {project_id} 不存在")
+
+
+async def rename_project_dto(
+    s: AsyncSession,
+    project_id: int,
+    name: str,
+) -> dict:
+    """重命名项目，返回 DTO {id, name, createdAt}；不存在 → 404，重名 → 409。"""
+    if await proj_repo.get_project(s, project_id) is None:
+        raise ApiError(404, "PROJECT_NOT_FOUND", f"项目 {project_id} 不存在")
+    try:
+        proj = await proj_repo.rename_project(s, project_id, name)
+    except IntegrityError as exc:
+        await s.rollback()
+        raise ApiError(409, "PROJECT_NAME_EXISTS", f"项目名称已存在: {name}") from exc
+    return {
+        "id": proj.id,
+        "name": proj.name,
+        "createdAt": proj.created_at.isoformat() if proj.created_at else None,
+    }
+
+
 async def get_project_dto(s: AsyncSession, project_id: int) -> dict | None:
     """取单项目详情 DTO，含 paperCount/includedCount/readableFulltextCount。"""
     proj = await proj_repo.get_project(s, project_id)

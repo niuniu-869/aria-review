@@ -20,7 +20,9 @@ const PHASE_LABEL: Record<GapRunProgress["phase"], string> = {
 
 /** subagent 活动 → 一行可读文案。 */
 function activityLine(e: GapSseEvent): string {
-  const skill = e.skill === "value-evidence" ? "核验" : "发现";
+  const skill = e.skill === "feasibility-scout"
+    ? "可行性核验"
+    : e.skill === "value-evidence" ? "价值核验" : "发现";
   if (e.child_type === "tools_start" && e.tool_calls?.length) {
     const names = e.tool_calls.map((t) => t.name).join(", ");
     return `${skill} agent 调用工具：${names}`;

@@ -22,6 +22,8 @@ from typing import List, Optional
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from sqlalchemy.exc import DataError, IntegrityError, SQLAlchemyError
@@ -87,6 +89,7 @@ from .schemas import (
     ArtifactPatchRequest,
     AiJobCreateRequest,
     AiJobItem,
+    AnalyticsEventRequest,
     AuthorProductionEnvelope,
     AuthorsResult,
     ChatRequest,
@@ -119,6 +122,7 @@ from .schemas import (
     ProjectLibraryStats,
     ProjectPaperItem,
     ProjectRef,
+    ProjectRenameRequest,
     RefsRequest,
     ReportOptions,
     ReviewRequest,
@@ -300,7 +304,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="BiblioCN agent", version="0.6.0", lifespan=lifespan,
+    title="BiblioCN agent", version="0.6.1", lifespan=lifespan,
     dependencies=[Depends(global_guard)],  # 全局守卫：认证 + project 归属（Round 5）
 )
 app.add_middleware(
@@ -335,6 +339,40 @@ async def request_id_mw(request: Request, call_next):
 @app.exception_handler(ApiError)
 async def api_error_handler(request: Request, exc: ApiError):
     return JSONResponse(status_code=exc.status_code, content=exc.body())
+
+
+# F-23: pydantic 422 → 中文摘要（与 ApiError 同构：code/message/details，前端统一按 code 展示）
+_FIELD_LABELS = {"password": "密码", "email": "邮箱", "name": "名称"}
+
+
+def _zh_validation_message(errors: list[dict]) -> str:
+    parts: list[str] = []
+    for err in errors:
+        loc = err.get("loc") or ()
+        field = str(loc[-1]) if loc else ""
+        label = _FIELD_LABELS.get(field, field)
+        etype, ctx = err.get("type", ""), err.get("ctx") or {}
+        if etype == "string_too_short":
+            parts.append(f"{label}至少 {ctx.get('min_length')} 位")
+        elif etype == "missing":
+            parts.append(f"缺少必填字段 {label}")
+        elif etype in ("value_error", "email"):
+            parts.append(f"{label}格式不正确")
+        else:
+            parts.append(err.get("msg", "参数错误"))
+    return "；".join(parts)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "code": "VALIDATION_ERROR",
+            "message": _zh_validation_message(exc.errors()),
+            "details": {"errors": jsonable_encoder(exc.errors())},
+        },
+    )
 
 
 # R 健康 grace 缓存：R 是单线程 plumber，一次检索会阻塞它数秒（健康探针被饿死、5s 超时）。
@@ -1264,6 +1302,44 @@ async def ai_ping(request: Request):
     }
 
 
+_ANALYTICS_PROPS_MAX = 4096  # props 序列化字节上限，防登录用户刷大 JSON 占资源（codex P2）
+
+
+@app.post("/events", status_code=202)
+async def record_event(
+    body: AnalyticsEventRequest,
+    user=Depends(get_current_user),
+    s=Depends(get_session),
+):
+    """产品埋点上报（0.6.1 P0 漏斗观测）。best-effort：只追加一行，写库失败静默吞掉，
+    绝不影响主流程。事件恒归属当前登录用户；projectId 来自 body，故只接受本人拥有的项目，
+    否则丢弃归属（project_id=None，事件仍记）——防跨租户污染 per-project 漏斗（codex P1）。"""
+    from .models import AnalyticsEvent
+    project_id = body.projectId
+    if project_id is not None:
+        proj = await project_repo.get_project(s, project_id)
+        if proj is None or (proj.owner_id is not None and proj.owner_id != user.id):
+            project_id = None  # 非本人项目：不写入对方项目，仅记事件本身
+    props = body.props or {}
+    try:
+        if len(json.dumps(props, ensure_ascii=False)) > _ANALYTICS_PROPS_MAX:
+            props = {"_truncated": True}  # 超限丢弃 payload，只留标记
+    except (TypeError, ValueError):
+        props = {"_unserializable": True}
+    try:
+        s.add(AnalyticsEvent(
+            user_id=user.id,
+            project_id=project_id,
+            event=body.event[:48],
+            props=props,
+        ))
+        await s.commit()
+    except Exception:
+        log.warning("analytics event 落库失败，忽略", exc_info=True)
+        await s.rollback()
+    return {"ok": True}
+
+
 @app.post("/ai/image/ping", response_model=ImagePingResult)
 async def image_ping(body: ImageSettingsPayload, request: Request):
     options = _image_runtime_options(request, body)
@@ -1517,6 +1593,28 @@ async def get_project_endpoint(pid: int, s=Depends(get_session)):
     if dto is None:
         raise ApiError(404, "PROJECT_NOT_FOUND", f"项目 {pid} 不存在")
     return dto
+
+
+@app.delete("/projects/{pid:int}", status_code=204)
+async def delete_project_endpoint(pid: int, request: Request, s=Depends(get_session)):
+    """删除项目（子表 DB 级联；共享 Paper 实体不受影响）。
+
+    严格 owner 校验：global_guard 对 owner_id 为空的存量项目向后兼容放行（可读），
+    但删除是不可逆写操作——owner 为空或不等当前用户一律 404（codex 二审 P1）。
+    """
+    proj = await project_repo.get_project(s, pid)
+    if proj is None or proj.owner_id != request.state.user.id:
+        raise ApiError(404, "PROJECT_NOT_FOUND", "项目不存在")
+    await project_svc.delete_project_dto(s, pid)
+
+
+@app.patch("/projects/{pid:int}", response_model=ProjectRef)
+async def rename_project_endpoint(pid: int, body: ProjectRenameRequest, request: Request, s=Depends(get_session)):
+    """重命名项目；重名 → 409 PROJECT_NAME_EXISTS。写操作同删除：严格 owner（含空 owner 拒绝）。"""
+    proj = await project_repo.get_project(s, pid)
+    if proj is None or proj.owner_id != request.state.user.id:
+        raise ApiError(404, "PROJECT_NOT_FOUND", "项目不存在")
+    return await project_svc.rename_project_dto(s, pid, body.name)
 
 
 @app.post(
@@ -2368,7 +2466,7 @@ async def from_search_endpoint(
     response_model=BackfillMetadataResult,
     summary="AI 元数据补全：用 LLM 从已 OCR 全文回填缺失题录（P3-T1）",
     description=(
-        "对项目内 OCR-done 且缺 abstract 或 creators 的文献，"
+        "对项目内 OCR-done 且缺 abstract、creators 或 year 的文献，"
         "用 LLM 读取 Markdown 全文首部抽取元数据，仅回填当前为空的字段，不覆盖已有内容。\n\n"
         "逐篇失败隔离：单篇 LLM/JSON/DB 错误不影响批次其他篇。\n"
         "支持 X-LLM-Key 头（用户自带 key）；无 key 时回退服务端 DEEPSEEK。"
@@ -2391,7 +2489,7 @@ async def backfill_metadata_endpoint(
     if await _get_proj(s, pid) is None:
         raise ApiError(404, "PROJECT_NOT_FOUND", f"项目 {pid} 不存在")
 
-    # 2. 查询目标论文：项目内 OCR done 且（onlyMissing=True 时缺 abstract 或 creators）
+    # 2. 查询目标论文：项目内 OCR done 且（onlyMissing=True 时缺 abstract、creators 或 year）
     att_sq = (
         select(Attachment.paper_id)
         .where(
@@ -2415,7 +2513,8 @@ async def backfill_metadata_endpoint(
             Paper.creators.is_(None),
             sa_func.json_array_length(Paper.creators) == 0,
         )
-        base_where.append(or_(missing_abstract, missing_creators))
+        # F-05: 缺 year 同样视为缺元数据（否则「补全年份」建议成为死路）
+        base_where.append(or_(missing_abstract, missing_creators, Paper.year.is_(None)))
 
     # 3. 取本批次目标论文的 paper_id 列表（只取 id，避免 rollback expire 整批对象）
     #    A-fix: 只预取 Paper.id 列表，循环内 s.get 重新取新鲜对象，使 rollback 后下篇不受 expire 影响。
@@ -2846,6 +2945,7 @@ async def get_agent_run(pid: int, rid: int, s=Depends(get_session)):
     return RunDetail(
         runId=run.id,
         status=normalize_run_status(run.status),
+        prompt=agent_run_repo._extract_user_prompt(run.messages_snapshot) or None,
         roundsLog=run.rounds_log or [],
         finalOutput=run.final_output,
         evidenceRefs=run.evidence_refs,

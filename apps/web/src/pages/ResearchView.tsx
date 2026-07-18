@@ -9,7 +9,7 @@
  * 路由：/projects/:pid/research（pid 取自 params）。
  * dev/e2e：可传 projectId/corpusId override，跳过 project 拉取（见 DevRoutes /dev/research）。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -19,11 +19,15 @@ import {
   useScratchpad,
   useVerifyGap,
   useGapVerdict,
+  useFeasibilityVerify,
+  useFeasibilityVerdict,
+  isFeasibilityVerdictPending,
   usePatchGap,
   useAiJob,
   getActiveRCorpusId,
 } from "../api/agentHooks";
 import { ApiError } from "../api/client";
+import { isTerminalScratchpadRunStatus } from "../api/runStatus";
 import { asRCorpusId } from "../api/corpusIds";
 import type { GapCandidate, GapPatchAction } from "../types/research";
 import { ErrMsg } from "../lib/ui";
@@ -32,10 +36,19 @@ import { GapPanel } from "../components/research/GapPanel";
 import { ScratchpadLive } from "../components/research/ScratchpadLive";
 import { GapRunTimeline } from "../components/research/GapRunTimeline";
 import { ValueVerdictCard } from "../components/research/ValueVerdictCard";
+import { FeasibilityVerdictCard } from "../components/research/FeasibilityVerdictCard";
 import { useGapRunStream } from "../hooks/useGapRunStream";
+import { track } from "../lib/track";
 
 function is404(err: unknown): boolean {
   return err instanceof ApiError && err.status === 404;
+}
+
+// 未核验 409/404 现由 useFeasibilityVerdict 静默为 {pending:true} 哨兵（F-20）；
+// 本守卫仅兜底历史/竞态下仍以错误形式暴露的「未就绪」，与 pending 一样不显示错误。
+function isFeasibilityNotReady(err: unknown): boolean {
+  return err instanceof ApiError
+    && (err.status === 404 || (err.status === 409 && err.code === "GAP_NOT_FEASIBILITY_CHECKED"));
 }
 
 type GapDiagnostic = {
@@ -132,6 +145,12 @@ export function ResearchView({ projectId: pidProp, corpusId: cidProp }: Research
   const pid = pidProp ?? Number(params.pid);
   const validPid = Number.isFinite(pid) && pid > 0;
 
+  useEffect(() => {
+    track("gap_view", undefined, pid);
+    // 每次研究区组件挂载仅上报一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 有 corpusId override(dev) 时不拉 project；否则从 activeCorpus 取就绪的 R 语料 id
   const project = useProject(cidProp || !validPid ? 0 : pid);
   const activeCorpus = project.data?.activeCorpus ?? null;
@@ -157,13 +176,30 @@ export function ResearchView({ projectId: pidProp, corpusId: cidProp }: Research
   const scratchpad = useScratchpad(pid, runId);
   const gaps: GapCandidate[] = scratchpad.data?.entries ?? [];
 
+  // F-24: scratchpad 轮询在 run 终态即停，停前做最后一次失效重拉，
+  // 保证 GAP 计数/状态与后端最终落库一致。每个 run id 只触发一次。
+  const scratchpadFinalRef = useRef<string | null>(null);
+  const scratchpadRunStatus = scratchpad.data?.run_status;
+  useEffect(() => {
+    if (!runId || scratchpadFinalRef.current === runId) return;
+    if (!isTerminalScratchpadRunStatus(scratchpadRunStatus)) return;
+    scratchpadFinalRef.current = runId;
+    void queryClient.invalidateQueries({ queryKey: ["scratchpad", pid] });
+  }, [pid, queryClient, runId, scratchpadRunStatus]);
+
   const selectedGap = gaps.find((g) => g.gap_id === selectedGapId) ?? null;
 
   const verify = useVerifyGap(pid);
   const [verifyingGap, setVerifyingGap] = useState<{ gapId: string; runId: string | null } | null>(null);
+  const feasibilityVerify = useFeasibilityVerify(pid);
+  const [feasibilityRun, setFeasibilityRun] = useState<{ gapId: string; runId: string | null } | null>(null);
+  useEffect(() => {
+    setVerifyingGap(null);
+    setFeasibilityRun(null);
+  }, [pid]);
   // P1 可观测：优先流当前核验 run（较短），否则流发现 run（长精读黑箱）。SSE 实时冒
   // 精读 N/M + subagent 活动；run 终态后 GapRunTimeline 自动隐藏。
-  const activeGapRunId = verifyingGap?.runId ?? runId;
+  const activeGapRunId = feasibilityRun?.runId ?? verifyingGap?.runId ?? runId;
   const gapProgress = useGapRunStream(pid, activeGapRunId, { enabled: validPid });
   const verifyJobId = verifyingGap?.runId && /^\d+$/.test(verifyingGap.runId)
     ? Number(verifyingGap.runId)
@@ -172,6 +208,13 @@ export function ResearchView({ projectId: pidProp, corpusId: cidProp }: Research
   const verifyJobStatus = verifyJob.data?.status;
   const currentGapVerifying = !!selectedGap && verifyingGap?.gapId === selectedGap.gap_id;
   const verifyFailed = currentGapVerifying && (verifyJobStatus === "failed" || verifyJobStatus === "cancelled");
+  const feasibilityJobId = feasibilityRun?.runId && /^\d+$/.test(feasibilityRun.runId)
+    ? Number(feasibilityRun.runId)
+    : null;
+  const feasibilityJob = useAiJob(pid, feasibilityJobId, { enabled: !!feasibilityRun, pollMs: 4000 });
+  const currentGapFeasibility = !!selectedGap && feasibilityRun?.gapId === selectedGap.gap_id;
+  const feasibilityFailed = currentGapFeasibility
+    && (feasibilityJob.data?.status === "failed" || feasibilityJob.data?.status === "cancelled");
   // A3-P2：verify 异步约数分钟，给等待加已耗时计时（否则盲等无反馈）。
   const [verifyElapsed, setVerifyElapsed] = useState(0);
   const [verifyStartedAt, setVerifyStartedAt] = useState<number | null>(null);
@@ -192,6 +235,10 @@ export function ResearchView({ projectId: pidProp, corpusId: cidProp }: Research
     poll: shouldPollVerdict,
     pollMs: 4000,
   });
+  const feasibilityVerdict = useFeasibilityVerdict(pid, selectedGapId, {
+    poll: currentGapFeasibility && !feasibilityFailed,
+    pollMs: 4000,
+  });
   const patch = usePatchGap(pid);
 
   useEffect(() => {
@@ -204,6 +251,12 @@ export function ResearchView({ projectId: pidProp, corpusId: cidProp }: Research
     if (selectedGap.status !== "draft") setVerifyingGap(null);
   }, [selectedGap, verifyingGap]);
 
+  useEffect(() => {
+    if (!feasibilityRun || !feasibilityVerdict.data) return;
+    if (isFeasibilityVerdictPending(feasibilityVerdict.data)) return;
+    if (feasibilityVerdict.data.gap_id === feasibilityRun.gapId) setFeasibilityRun(null);
+  }, [feasibilityRun, feasibilityVerdict.data]);
+
   function startVerifyGap(gapId: string) {
     setVerifyStartedAt(Date.now());
     setVerifyingGap({ gapId, runId: null });
@@ -212,6 +265,18 @@ export function ResearchView({ projectId: pidProp, corpusId: cidProp }: Research
       {
         onSuccess: (r) => setVerifyingGap({ gapId, runId: r.verify_run_id }),
         onError: () => setVerifyingGap(null),
+      },
+    );
+  }
+
+  function startFeasibilityVerify(gapId: string) {
+    track("gap_feasibility_click", { gapId }, pid);
+    setFeasibilityRun({ gapId, runId: null });
+    feasibilityVerify.mutate(
+      { gapId },
+      {
+        onSuccess: (r) => setFeasibilityRun({ gapId, runId: r.feasibility_run_id }),
+        onError: () => setFeasibilityRun(null),
       },
     );
   }
@@ -232,6 +297,7 @@ export function ResearchView({ projectId: pidProp, corpusId: cidProp }: Research
     ) {
       return;
     }
+    track("gap_run", undefined, pid);
     discover.mutate(
       { cid },
       {
@@ -310,56 +376,74 @@ export function ResearchView({ projectId: pidProp, corpusId: cidProp }: Research
                 <div className="card research-detail-empty" role="note">
                   从左侧选择一个研究空白，查看价值核验与 HITL 决策。
                 </div>
-              ) : verdict.data ? (
-                <ValueVerdictCard
-                  result={verdict.data}
-                  gap={selectedGap}
-                  onDecide={onDecide}
-                  isDeciding={patch.isPending}
-                  decideError={(patch.error as Error) ?? null}
-                />
-              ) : selectedGap.status === "draft" ? (
-                <div className="card research-verify-prompt">
-                  {currentGapVerifying && !verifyFailed ? (
-                    <p
-                      className="research-verify-progress muted"
-                      aria-live="polite"
-                      role="status"
-                      style={{ fontSize: "0.82rem", margin: 0 }}
-                    >
-                      <span className="spinner" /> 价值核验进行中 · 已耗时 {verifyElapsed}s · 每 4 秒自动刷新
-                    </p>
+              ) : (
+                <>
+                  {verdict.data ? (
+                    <ValueVerdictCard
+                      result={verdict.data}
+                      gap={selectedGap}
+                      onDecide={onDecide}
+                      isDeciding={patch.isPending}
+                      decideError={(patch.error as Error) ?? null}
+                    />
+                  ) : selectedGap.status === "draft" ? (
+                    <div className="card research-verify-prompt">
+                      {currentGapVerifying && !verifyFailed ? (
+                        <p className="research-verify-progress muted" aria-live="polite" role="status">
+                          <span className="spinner" /> 价值核验进行中 · 已耗时 {verifyElapsed}s · 每 4 秒自动刷新
+                        </p>
+                      ) : (
+                        <>
+                          <p className="research-verify-text">该研究空白尚未核验价值。</p>
+                          <button type="button" className="btn btn-primary" disabled={verify.isPending}
+                            onClick={() => startVerifyGap(selectedGap.gap_id)}>
+                            {verify.isPending && verify.variables?.gapId === selectedGap.gap_id ? "核验中…" : "核验研究价值"}
+                          </button>
+                        </>
+                      )}
+                      {verifyFailed && <div className="research-verify-failed" role="alert">价值核验任务失败，未生成裁决。可稍后重试。</div>}
+                      {verify.isError && <ErrMsg error={verify.error} />}
+                    </div>
+                  ) : verdict.isError && !is404(verdict.error) ? (
+                    <div className="card"><ErrMsg error={verdict.error} /></div>
                   ) : (
-                    <>
-                      <p className="research-verify-text">该研究空白尚未核验价值。</p>
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        disabled={verify.isPending}
-                        onClick={() => startVerifyGap(selectedGap.gap_id)}
-                      >
-                        {verify.isPending && verify.variables?.gapId === selectedGap.gap_id
-                          ? "核验中…"
-                          : "核验研究价值"}
-                      </button>
-                    </>
-                  )}
-                  {verifyFailed && (
-                    <div className="research-verify-failed" role="alert">
-                      价值核验任务失败，未生成裁决。可稍后重试。
+                    <div className="card research-detail-pending" role="status">
+                      <span className="spinner" /> 价值裁决生成中…
                     </div>
                   )}
-                  {verify.isError && <ErrMsg error={verify.error} />}
-                </div>
-              ) : verdict.isError && !is404(verdict.error) ? (
-                <div className="card">
-                  <ErrMsg error={verdict.error} />
-                </div>
-              ) : (
-                // 裁决加载中或 404(尚未产生)：显式 pending，不留空白（codex B5-P2）
-                <div className="card research-detail-pending" role="status">
-                  <span className="spinner" /> 价值裁决生成中…
-                </div>
+
+                  {feasibilityVerdict.data && !isFeasibilityVerdictPending(feasibilityVerdict.data) ? (
+                    <FeasibilityVerdictCard result={feasibilityVerdict.data} />
+                  ) : (
+                    <div className="card research-verify-prompt">
+                      {currentGapFeasibility && !feasibilityFailed ? (
+                        <p className="research-verify-progress muted" aria-live="polite" role="status">
+                          <span className="spinner" /> 可行性核验进行中 · 每 4 秒自动刷新
+                        </p>
+                      ) : (
+                        <>
+                          <p className="research-verify-text">核验数据、方法与资源是否足以支撑该方向。</p>
+                          <button type="button" className="btn btn-primary" disabled={feasibilityVerify.isPending}
+                            onClick={() => startFeasibilityVerify(selectedGap.gap_id)}>
+                            {feasibilityVerify.isPending && feasibilityVerify.variables?.gapId === selectedGap.gap_id
+                              ? "核验中…"
+                              : "可行性核验"}
+                          </button>
+                        </>
+                      )}
+                      {feasibilityFailed && (
+                        <div className="research-verify-failed" role="alert">
+                          可行性核验任务失败：{feasibilityJob.data?.error || "未生成裁决，可稍后重试。"}
+                        </div>
+                      )}
+                      {feasibilityVerify.isError && <ErrMsg error={feasibilityVerify.error} />}
+                      {feasibilityVerdict.error
+                        && !isFeasibilityNotReady(feasibilityVerdict.error)
+                        && !currentGapFeasibility
+                        && <ErrMsg error={feasibilityVerdict.error} />}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </aside>

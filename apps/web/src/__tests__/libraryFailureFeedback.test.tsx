@@ -7,6 +7,7 @@
  * 3. ScreeningMode 决策保存 500 失败时，保留当前文献并显示可重试错误
  */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LibraryView } from "../pages/LibraryView";
@@ -90,12 +91,15 @@ vi.mock("../api/agentHooks", async () => {
 });
 
 function renderLibrary() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={["/projects/1/library"]}>
-      <Routes>
-        <Route path="/projects/:pid/library" element={<LibraryView />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/projects/1/library"]}>
+        <Routes>
+          <Route path="/projects/:pid/library" element={<LibraryView />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

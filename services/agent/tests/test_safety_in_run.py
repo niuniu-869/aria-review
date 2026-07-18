@@ -32,7 +32,7 @@ from app.repositories.project import (
     add_paper_to_project,
     set_inclusion,
 )
-from app.models import Attachment
+from app.models import Attachment, DocumentStructure
 
 
 # ======================================================================
@@ -45,13 +45,13 @@ _DOI_A = "10.1234/alpha"
 _DOI_B = "10.5678/beta"
 
 
-async def _seed_project(session_factory, tmp_path) -> int:
+async def _seed_project(session_factory, tmp_path, name: str = "P3-2 测试项目") -> int:
     """建 1 个 project + 2 篇 included 论文（含 markdown 文件 + Attachment.sha256）。
 
     返回 project_id。
     """
     async with session_factory() as s:
-        proj = await create_project(s, {"name": "P3-2 测试项目"})
+        proj = await create_project(s, {"name": name})
 
         # 论文 A
         md_a = tmp_path / f"{_SHA_A}.md"
@@ -137,6 +137,95 @@ class TestLoadProjectCorpus:
             _, records, _ = await load_project_corpus(s, project_id)
         titles = {r["title"] for r in records}
         assert "Paper Gamma" not in titles
+
+    @pytest.mark.asyncio
+    async def test_structure_falls_back_to_any_attachment(self, session_factory, tmp_path):
+        """重复导入产生多条 attachment 时，DocumentStructure 只挂在旧附件上；
+        所选（最新）附件无结构 → 应回退到同论文任一附件的结构（生产 F-18 回归）。"""
+        async with session_factory() as s:
+            proj = await create_project(s, {"name": "F-18 结构回退"})
+            md = tmp_path / f"{_SHA_A}.md"
+            md.write_text("# Paper Alpha\n\n关于主题 X 的实证研究全文。", encoding="utf-8")
+            paper = await add_paper(s, {
+                "title": "Paper Alpha", "creators": [{"literal": "Author A"}],
+                "year": 2020, "doi": _DOI_A, "source": "upload",
+            })
+            # 旧附件：带 DocumentStructure（首次导入产物）
+            att_old = Attachment(
+                paper_id=paper.id, path=str(tmp_path / "old.pdf"),
+                sha256=_SHA_A, mineru_status="done", markdown_path=str(md),
+            )
+            s.add(att_old)
+            await s.flush()
+            s.add(DocumentStructure(
+                attachment_id=att_old.id,
+                content_list=[{
+                    "type": "text", "text": "Intro. Fake source quote for provenance test.",
+                    "text_level": None, "page_idx": 0, "bbox": [1.0, 2.0, 3.0, 4.0],
+                }],
+                page_count=1,
+                has_bbox=True,
+            ))
+            # 新附件（重复导入产生，id 更大、会被优先选中）：无结构
+            s.add(Attachment(
+                paper_id=paper.id, path=str(tmp_path / "new.pdf"),
+                sha256=_SHA_A, mineru_status="done", markdown_path=str(md),
+            ))
+            await s.commit()
+            pp = await add_paper_to_project(s, proj.id, paper.id, order=0)
+            await set_inclusion(s, pp.id, "included")
+
+        async with session_factory() as s:
+            paper_markdowns, records, skipped = await load_project_corpus(s, proj.id)
+
+        assert not skipped
+        assert len(paper_markdowns) == 1
+        assert paper_markdowns[0]["content_list"], "应回退取到旧附件的 DocumentStructure"
+        assert paper_markdowns[0]["content_list"][0]["page_idx"] == 0
+
+    @pytest.mark.asyncio
+    async def test_structure_not_used_from_different_sha_attachment(self, session_factory, tmp_path):
+        """codex 二审 P1：结构挂在**不同内容哈希**的附件上 → 不得用于定位
+        （不同版本 PDF 坐标错配 = 伪溯源）；content_list 应为 None。"""
+        _SHA_OTHER = "e" * 64
+        async with session_factory() as s:
+            proj = await create_project(s, {"name": "F-18 异哈希结构拒用"})
+            md = tmp_path / f"{_SHA_A}.md"
+            md.write_text("# Paper Alpha 新版\n\n关于主题 X 的实证研究全文。", encoding="utf-8")
+            paper = await add_paper(s, {
+                "title": "Paper Alpha", "creators": [{"literal": "Author A"}],
+                "year": 2020, "doi": _DOI_A, "source": "upload",
+            })
+            # 旧版 PDF 附件（sha 不同）：带 DocumentStructure
+            att_old = Attachment(
+                paper_id=paper.id, path=str(tmp_path / "old.pdf"),
+                sha256=_SHA_OTHER, mineru_status="done", markdown_path=str(md),
+            )
+            s.add(att_old)
+            await s.flush()
+            s.add(DocumentStructure(
+                attachment_id=att_old.id,
+                content_list=[{
+                    "type": "text", "text": "旧版坐标，不得用于新版正文。",
+                    "text_level": None, "page_idx": 0, "bbox": [1.0, 2.0, 3.0, 4.0],
+                }],
+                page_count=1,
+                has_bbox=True,
+            ))
+            # 新版 PDF 附件（sha=_SHA_A，id 更大被选中）：无结构
+            s.add(Attachment(
+                paper_id=paper.id, path=str(tmp_path / "new.pdf"),
+                sha256=_SHA_A, mineru_status="done", markdown_path=str(md),
+            ))
+            await s.commit()
+            pp = await add_paper_to_project(s, proj.id, paper.id, order=0)
+            await set_inclusion(s, pp.id, "included")
+
+        async with session_factory() as s:
+            paper_markdowns, _, skipped = await load_project_corpus(s, proj.id)
+
+        assert not skipped
+        assert paper_markdowns[0]["content_list"] is None, "异哈希附件的结构绝不可用于定位"
 
     @pytest.mark.asyncio
     async def test_skips_paper_without_markdown(self, session_factory, tmp_path):
@@ -462,3 +551,168 @@ class TestStateWritebackPersisted:
         )
         assert run2.validation_summary is not None
         assert run2.validation_summary.get("fabricated_citations", 0) >= 1
+
+
+# ======================================================================
+# F-11 — 综述主题必须来自语料，绝不来自项目名
+# ======================================================================
+
+# 对抗项目名：含 XSS 注入内容，绝不能成为综述主题
+_ADVERSARIAL_NAME = "<img src=x onerror=alert(1)> XSS测试"
+
+
+async def _run_review_tool_capture_topic(session_factory, project_id, topic: str) -> dict:
+    """调 ReviewTool（stub 掉 run_review），捕获实际传入 run_review 的 topic。"""
+    captured: dict = {}
+
+    async def _stub_run_review(*, topic, paper_markdowns, records, **kwargs):
+        captured["topic"] = topic
+        return {
+            "review_md": "## 1. 引言\n\n占位综述正文。[1]\n",
+            "summaries": [],
+            "validation_summary": {
+                "valid_citations": 0, "fabricated_citations": 0, "fabricated_spans": [],
+            },
+            "evidence_refs": [],
+            "provenance_map": {},
+            "stats": {"total_papers": len(paper_markdowns), "review_chars": 12},
+            "error": None,
+        }
+
+    tool = ReviewTool(session_factory)
+    context = {"project_id": project_id, "session_factory": session_factory}
+    with patch("app.tools.review_tool.run_review", new=_stub_run_review):
+        result = await tool.execute("generate", {"topic": topic}, context)
+    assert result.success, f"工具应成功: {result.error}"
+    return captured
+
+
+class TestReviewTopicFromCorpus:
+    @pytest.mark.asyncio
+    async def test_missing_topic_derived_from_paper_titles(self, session_factory, tmp_path):
+        """topic 缺省时从语料标题派生，绝不回退项目名（对抗项目名注入）。"""
+        project_id = await _seed_project(session_factory, tmp_path, name=_ADVERSARIAL_NAME)
+        captured = await _run_review_tool_capture_topic(session_factory, project_id, topic="")
+        topic = captured["topic"]
+        assert "Paper Alpha" in topic and "Paper Beta" in topic
+        assert "XSS" not in topic and "<img" not in topic
+
+    @pytest.mark.asyncio
+    async def test_short_topic_treated_as_missing(self, session_factory, tmp_path):
+        """topic 过短（<4 字符，疑似占位）同样从语料派生。"""
+        project_id = await _seed_project(session_factory, tmp_path, name=_ADVERSARIAL_NAME)
+        captured = await _run_review_tool_capture_topic(session_factory, project_id, topic="ab")
+        assert "Paper Alpha" in captured["topic"]
+        assert "XSS" not in captured["topic"]
+
+    @pytest.mark.asyncio
+    async def test_explicit_topic_passed_through(self, session_factory, tmp_path):
+        """正常 topic 原样透传，不做派生。"""
+        project_id = await _seed_project(session_factory, tmp_path, name=_ADVERSARIAL_NAME)
+        captured = await _run_review_tool_capture_topic(
+            session_factory, project_id, topic="钙钛矿太阳能电池稳定性",
+        )
+        assert captured["topic"] == "钙钛矿太阳能电池稳定性"
+
+    @pytest.mark.asyncio
+    async def test_project_block_marks_name_as_non_topic(self, session_factory, tmp_path):
+        """项目身份块必须声明「项目名仅为标识、研究主题来自语料」（防注入的第二道防线）。"""
+        from app.agent.run_controller import RunController
+
+        project_id = await _seed_project(session_factory, tmp_path, name=_ADVERSARIAL_NAME)
+        controller = RunController(session_factory, publisher=None, build_ctx=None)
+        block = await controller._project_block(project_id)
+        assert "项目名仅为标识" in block
+        assert "研究主题必须来自语料内容而非项目名" in block
+
+
+# ======================================================================
+# F-18 — EvidenceRef 块级锚点回填（run evidence_refs 不再恒 NULL）
+# ======================================================================
+
+async def _seed_project_with_structure(session_factory, tmp_path) -> int:
+    """建 1 project + 2 篇 included 论文；论文 A 的附件带 DocumentStructure。
+
+    content_list 文本含 Fake 精读固定的 source_quote（'Fake source quote for
+    provenance test.'），map 阶段 EvidenceResolver 可定位回 block。
+    """
+    async with session_factory() as s:
+        proj = await create_project(s, {"name": "F-18 锚点回填"})
+
+        # 论文 A：markdown + Attachment + DocumentStructure（content_list 可定位）
+        md_a = tmp_path / f"{_SHA_A}.md"
+        md_a.write_text("# Paper Alpha\n\n关于主题 X 的实证研究全文。", encoding="utf-8")
+        paper_a = await add_paper(s, {
+            "title": "Paper Alpha",
+            "creators": [{"literal": "Author A"}],
+            "year": 2020,
+            "doi": _DOI_A,
+            "source": "upload",
+        })
+        att_a = Attachment(
+            paper_id=paper_a.id,
+            path=str(tmp_path / "a.pdf"),
+            sha256=_SHA_A,
+            mineru_status="done",
+            markdown_path=str(md_a),
+        )
+        s.add(att_a)
+        await s.flush()  # 取 att_a.id 供 DocumentStructure 外键
+        s.add(DocumentStructure(
+            attachment_id=att_a.id,
+            content_list=[{
+                "type": "text",
+                "text": "Intro. Fake source quote for provenance test. More.",
+                "text_level": None,
+                "page_idx": 0,
+                "bbox": [10.0, 20.0, 500.0, 60.0],
+            }],
+            page_count=1,
+            has_bbox=True,
+        ))
+
+        # 论文 B：markdown + Attachment，无 DocumentStructure（锚点应保持 None）
+        md_b = tmp_path / f"{_SHA_B}.md"
+        md_b.write_text("# Paper Beta\n\n关于主题 X 的综述全文。", encoding="utf-8")
+        paper_b = await add_paper(s, {
+            "title": "Paper Beta",
+            "creators": [{"literal": "Author B"}],
+            "year": 2021,
+            "doi": _DOI_B,
+            "source": "upload",
+        })
+        s.add(Attachment(
+            paper_id=paper_b.id,
+            path=str(tmp_path / "b.pdf"),
+            sha256=_SHA_B,
+            mineru_status="done",
+            markdown_path=str(md_b),
+        ))
+        await s.commit()
+
+        pp_a = await add_paper_to_project(s, proj.id, paper_a.id, added_by="user", order=0)
+        pp_b = await add_paper_to_project(s, proj.id, paper_b.id, added_by="user", order=1)
+        await set_inclusion(s, pp_a.id, "included")
+        await set_inclusion(s, pp_b.id, "included")
+
+        return proj.id
+
+
+class TestEvidenceAnchorBackfill:
+    @pytest.mark.asyncio
+    async def test_evidence_refs_carry_block_anchors(self, session_factory, tmp_path):
+        """有 DocumentStructure 的论文，其 EvidenceRef 回填 page/block/bbox/anchor 字段；
+        无结构的论文保持 None（防御性，绝不伪造坐标）。"""
+        project_id = await _seed_project_with_structure(session_factory, tmp_path)
+        result, emitted, state = await _run_review_tool(session_factory, project_id)
+        assert result.success, f"工具应成功: {result.error}"
+
+        assert state.evidence_refs, "state.evidence_refs 应非空"
+        anchored = [e for e in state.evidence_refs if e.get("anchor_id")]
+        assert anchored, "至少一条证据应带 anchor_id（F-18 回填）"
+        ref = anchored[0]
+        assert ref.get("block_idx") is not None
+        assert ref.get("page_no") is not None and ref["page_no"] >= 1
+        assert ref.get("bbox") == [10.0, 20.0, 500.0, 60.0]
+        # 回填不破坏既有溯源字段
+        assert ref.get("source_content_sha256") == _SHA_A

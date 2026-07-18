@@ -131,14 +131,22 @@ async def load_project_corpus(
 
         authors_str = _authors_str(paper.creators)
 
-        # B4a 溯源定位：取该附件的 DocumentStructure.content_list（无则 None，定位被跳过）。
+        # B4a 溯源定位：取该论文的 DocumentStructure.content_list（无则 None，定位被跳过）。
+        # 重复导入会产生多条同内容（同 sha256）attachment，但结构只挂在其中一条上；
+        # 只看所选附件会漏掉结构 → 回退到同论文**同内容哈希**的任一附件的结构
+        # （不同版本 PDF 绝不错配坐标——codex 二审 P1：错哈希的结构会把 A 文档坐标绑到 B 正文）。
         content_list = None
         if attachment is not None:
             ds = (
                 await s.execute(
-                    select(DocumentStructure).where(
-                        DocumentStructure.attachment_id == attachment.id
+                    select(DocumentStructure)
+                    .join(Attachment, DocumentStructure.attachment_id == Attachment.id)
+                    .where(
+                        Attachment.paper_id == paper.id,
+                        Attachment.sha256 == attachment.sha256,
                     )
+                    .order_by(DocumentStructure.id.desc())
+                    .limit(1)
                 )
             ).scalar_one_or_none()
             content_list = ds.content_list if ds else None

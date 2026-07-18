@@ -31,6 +31,11 @@ vi.mock("../api/agentHooks", () => ({
     isError: false,
     error: null,
   }),
+  useBackfillFulltext: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    error: null,
+  }),
 }));
 
 vi.mock("../auth/AuthContext", () => ({

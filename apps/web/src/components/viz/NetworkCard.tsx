@@ -32,9 +32,19 @@ const SLIDER_DEFAULT_CAP = 50;
 const SLIDER_HARD_MAX = 100;
 
 /** 按强度降序取前 N，并把边过滤到这些节点（切片算法核心） */
-function sliceGraph(graph: Graph, topN: number): Graph {
+type ValidGraph = {
+  nodes: { id: string; label: string; value: number }[];
+  edges: { source: string; target: string; weight: number }[];
+};
+
+function sliceGraph(graph: Graph, topN: number): ValidGraph {
+  const validNodes = graph.nodes.filter(
+    (node): node is { id: string; label: string; value: number } =>
+      typeof node.id === "string" && node.id.length > 0 &&
+      typeof node.label === "string" && typeof node.value === "number",
+  );
   // 先按强度降序，再按 id 去重（保留最高强度的那个），避免重复 id 传给 vis-network DataSet 报错
-  const sorted = [...graph.nodes].sort((a, b) => b.value - a.value);
+  const sorted = [...validNodes].sort((a, b) => b.value - a.value);
   const seen = new Set<string>();
   const deduped = sorted.filter((n) => {
     if (seen.has(n.id)) return false;
@@ -43,7 +53,11 @@ function sliceGraph(graph: Graph, topN: number): Graph {
   });
   const kept = deduped.slice(0, topN);
   const keepIds = new Set(kept.map((n) => n.id));
-  const edges = graph.edges.filter((e) => keepIds.has(e.source) && keepIds.has(e.target));
+  const edges = graph.edges.filter(
+    (edge): edge is { source: string; target: string; weight: number } =>
+      typeof edge.source === "string" && typeof edge.target === "string" &&
+      typeof edge.weight === "number" && keepIds.has(edge.source) && keepIds.has(edge.target),
+  );
   return { nodes: kept, edges };
 }
 

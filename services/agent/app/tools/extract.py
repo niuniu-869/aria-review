@@ -15,7 +15,7 @@ actions:
      处理」逻辑，批量处理项目内论文。
   2. structured 的「跳过已抽取」在 **SQL 层** 用 Paper.id.notin_(PaperExtraction)
      实现（reextract=False 时），让 limit 落在真正待抽取的篇上，不是应用层 continue。
-  3. metadata 用 onlyMissing 过滤「缺 abstract 或 creators」（默认 True）。
+  3. metadata 用 onlyMissing 过滤「缺 abstract、creators 或 year」（默认 True）。
   4. 单次开会话贯穿整批；每篇用 s.get(Paper, id) 取新鲜对象（单篇函数 rollback 后
      下篇不受 expire 影响），不每篇开新 session。
   5. LLM 客户端从 tool_context["override"] 构造（无 override / 无 key → 服务端回退或
@@ -72,7 +72,7 @@ class ExtractTool(BaseTool):
                 "limit": {"type": "integer", "description": "本批上限，默认 20"},
                 "only_missing": {
                     "type": "boolean",
-                    "description": "true（默认）只处理缺 abstract 或 creators 的篇；false 处理全部 OCR-done 篇",
+                    "description": "true（默认）只处理缺 abstract、creators 或 year 的篇；false 处理全部 OCR-done 篇",
                 },
             },
             "required": ["project_id"],
@@ -201,7 +201,8 @@ class ExtractTool(BaseTool):
                 Paper.creators.is_(None),
                 sa_func.json_array_length(Paper.creators) == 0,
             )
-            base_where.append(or_(missing_abstract, missing_creators))
+            # F-05: 缺 year 同样视为缺元数据
+            base_where.append(or_(missing_abstract, missing_creators, Paper.year.is_(None)))
 
         async with session_factory() as s:
             paper_ids = await self._batch_ids(s, base_where, limit)

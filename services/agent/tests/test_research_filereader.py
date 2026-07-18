@@ -173,3 +173,107 @@ def test_research_tools_reachable_in_default_registry():
     fns = {f["function"]["name"] for f in reg.get_function_definitions()}
     assert {"read_paper__outline", "read_paper__section", "read_paper__search_evidence"} <= fns
     assert {"scratchpad__add", "scratchpad__update", "scratchpad__list"} <= fns
+
+
+# ----------------------------------------------------------------- F-12 失败原因区分
+
+async def _mk_project(session_factory, name="F12"):
+    from app.repositories.project import create_project
+    async with session_factory() as s:
+        proj = await create_project(s, {"name": name})
+        return proj.id
+
+
+async def _mk_paper(session_factory, title="T"):
+    from app.repositories.library import add_paper
+    async with session_factory() as s:
+        paper = await add_paper(s, {"title": title, "source": "upload"})
+        return paper.id
+
+
+async def test_fail_reason_not_in_project(session_factory):
+    """paper 存在但未关联项目 → not_in_project（文献不在本项目中）。"""
+    project_id = await _mk_project(session_factory)
+    paper_id = await _mk_paper(session_factory)
+
+    tool = ReadPaperTool()
+    r = await tool.execute(
+        "outline", {"paper_id": paper_id},
+        {"session_factory": session_factory, "project_id": project_id},
+    )
+    assert r.success is False
+    assert "文献不在本项目中" in (r.error or "")
+
+
+async def test_fail_reason_no_attachment(session_factory):
+    """paper 已关联项目但无任何附件/结构 → no_attachment（尚无可用全文）。"""
+    from app.repositories.project import add_paper_to_project
+
+    project_id = await _mk_project(session_factory)
+    paper_id = await _mk_paper(session_factory)
+    async with session_factory() as s:
+        await add_paper_to_project(s, project_id, paper_id)
+        await s.commit()
+
+    tool = ReadPaperTool()
+    r = await tool.execute(
+        "outline", {"paper_id": paper_id},
+        {"session_factory": session_factory, "project_id": project_id},
+    )
+    assert r.success is False
+    assert "文献尚无可用全文" in (r.error or "")
+
+
+async def test_fail_reason_markdown_unreadable(session_factory, tmp_path):
+    """有 markdown 附件但文件缺失（路径护栏/读盘失败）且无结构 → markdown_unreadable。"""
+    from app.models import Attachment
+    from app.repositories.project import add_paper_to_project
+
+    project_id = await _mk_project(session_factory)
+    paper_id = await _mk_paper(session_factory)
+    sha = "d" * 64
+    async with session_factory() as s:
+        # markdown_path 指向不存在的文件 → 护栏 is_file 检查失败
+        s.add(Attachment(
+            paper_id=paper_id, path=str(tmp_path / "x.pdf"), sha256=sha,
+            mineru_status="done",
+            markdown_path=str(tmp_path / "fulltext" / f"{sha}.md"),
+        ))
+        await add_paper_to_project(s, project_id, paper_id)
+        await s.commit()
+
+    tool = ReadPaperTool()
+    r = await tool.execute(
+        "outline", {"paper_id": paper_id},
+        {"session_factory": session_factory, "project_id": project_id},
+    )
+    assert r.success is False
+    assert "全文文件读取失败" in (r.error or "")
+
+
+async def test_db_load_happy_path_unchanged(session_factory, tmp_path):
+    """DB 路径 happy path 不变：markdown 在 fulltext/ 下且文件名 <sha256>.md → outline 成功。"""
+    from app.models import Attachment
+    from app.repositories.project import add_paper_to_project
+
+    project_id = await _mk_project(session_factory)
+    paper_id = await _mk_paper(session_factory)
+    sha = "e" * 64
+    md_dir = tmp_path / "fulltext"
+    md_dir.mkdir()
+    (md_dir / f"{sha}.md").write_text(FULL_MD, encoding="utf-8")
+    async with session_factory() as s:
+        s.add(Attachment(
+            paper_id=paper_id, path=str(tmp_path / "x.pdf"), sha256=sha,
+            mineru_status="done", markdown_path=str(md_dir / f"{sha}.md"),
+        ))
+        await add_paper_to_project(s, project_id, paper_id)
+        await s.commit()
+
+    tool = ReadPaperTool()
+    r = await tool.execute(
+        "outline", {"paper_id": paper_id},
+        {"session_factory": session_factory, "project_id": project_id},
+    )
+    assert r.success, r.error
+    assert [d["title"] for d in r.data] == ["Introduction", "Methods", "Results"]

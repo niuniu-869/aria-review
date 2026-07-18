@@ -113,9 +113,9 @@ function ProjectSwitcher() {
 
 /** TopBar — 全局顶部导航栏 */
 export function TopBar() {
-  // 登录/注册页与公开落地页是独立全屏品牌体验，不显示应用顶栏（含后端健康点等内部 chrome）。
+  // 登录/注册页、公开落地页、公开原理页是独立全屏品牌体验，不显示应用顶栏（含后端健康点等内部 chrome）。
   const { pathname } = useLocation();
-  if (pathname === "/login" || pathname === "/welcome") return null;
+  if (pathname === "/login" || pathname === "/welcome" || pathname === "/about") return null;
 
   return (
     <header className="topbar">

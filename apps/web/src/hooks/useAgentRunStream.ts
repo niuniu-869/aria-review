@@ -9,6 +9,7 @@ import type {
   SciverseRequestOptions,
   SearchCandidate,
 } from "../api/client";
+import type { RunStatus } from "../api/runStatus";
 
 export interface AccumulatedSearchResult {
   candidates: SearchCandidate[];
@@ -23,6 +24,7 @@ export interface AgentRunCompleteInfo {
   runId: string;
   finalOutput: string;
   eventSeq: number;
+  status: RunStatus;
 }
 
 interface UseAgentRunStreamOptions {
@@ -128,7 +130,7 @@ export function useAgentRunStream({
           onRunComplete: (d) => {
             setEvents((prev) => [...prev, d]);
             if (d.final_output) {
-              onRunComplete?.({ runId, finalOutput: d.final_output, eventSeq: d.seq });
+              onRunComplete?.({ runId, finalOutput: d.final_output, eventSeq: d.seq, status: d.status });
               setShowFollowUps(true);
             }
           },

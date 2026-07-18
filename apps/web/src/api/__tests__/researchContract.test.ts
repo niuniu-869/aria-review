@@ -21,6 +21,7 @@ import {
   verdictResultG2,
   discoverAccepted,
   verifyAccepted,
+  feasibilityResultG2,
 } from "../research.fixtures";
 import { RUN_STATUS_DONE, RUN_STATUS_FAILED, RUN_STATUS_RUNNING } from "../runStatus";
 import type { EvidencePack, GapCandidate, ValueVerdict } from "../../types/research";
@@ -151,6 +152,12 @@ describe("研究契约 · 逐字保留 + 源坐标（铁律 3）", () => {
     expect(verdictResultG2.gap_id).toBe(verdictResultG2.verdict.gap_id);
     expect(verdictResultG2.gap_id).toBe(verdictResultG2.evidence.gap_id);
   });
+
+  it("GapFeasibilityVerdictResult 自洽：gap_id 三处一致且裁决来自确定性状态机", () => {
+    expect(feasibilityResultG2.gap_id).toBe(feasibilityResultG2.verdict.gap_id);
+    expect(feasibilityResultG2.gap_id).toBe(feasibilityResultG2.pack?.gap_id);
+    expect(feasibilityResultG2.verdict.decided_by).toBe("deterministic");
+  });
 });
 
 describe("研究 client · AIP 自定义方法 URL 构造", () => {
@@ -181,6 +188,15 @@ describe("研究 client · AIP 自定义方法 URL 构造", () => {
     const res = await verifyGap(5, "g2");
     expect(res.verify_run_id).toBe(verifyAccepted.verify_run_id);
     expect(calls[0].url).toMatch(/\/projects\/5\/gaps\/g2:verify$/);
+    expect(calls[0].init?.method).toBe("POST");
+  });
+
+  it("verifyGapFeasibility → POST .../gaps/{gap_id}:feasibility", async () => {
+    const { verifyGapFeasibility } = await import("../client");
+    const calls = stubFetch({ feasibility_run_id: "run_feasibility_001" });
+    const res = await verifyGapFeasibility(5, "g2");
+    expect(res.feasibility_run_id).toBe("run_feasibility_001");
+    expect(calls[0].url).toMatch(/\/projects\/5\/gaps\/g2:feasibility$/);
     expect(calls[0].init?.method).toBe("POST");
   });
 

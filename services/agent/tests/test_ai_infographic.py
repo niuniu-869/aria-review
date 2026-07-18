@@ -101,8 +101,10 @@ async def test_image_ping_rejects_body_api_key(ai_client):
     res = await ai_client.post("/ai/image/ping", json={"apiKey": "provider-credential-for-test"})
 
     assert res.status_code == 422
-    assert res.json()["detail"][0]["type"] == "extra_forbidden"
-    assert res.json()["detail"][0]["loc"] == ["body", "apiKey"]
+    # F-23 后 422 走统一信封 {code, message, details.errors}
+    assert res.json()["code"] == "VALIDATION_ERROR"
+    assert res.json()["details"]["errors"][0]["type"] == "extra_forbidden"
+    assert res.json()["details"]["errors"][0]["loc"] == ["body", "apiKey"]
 
 
 @pytest.mark.asyncio

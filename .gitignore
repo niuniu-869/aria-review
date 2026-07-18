@@ -19,15 +19,39 @@ rsconnect/
 .env.backup*
 .gstack/
 
-# Local planning/review notes, internal drafts, generated HTML stay local only.
-docs/private-*
-docs/local-*
+# Open-source hygiene: local planning/review artifacts, roadshow decks, screenshots,
+# outputs, benchmarks, and demo/test corpora stay local only.
+docs/superpowers/
+docs/phase0-build-report.md
+docs/phase0-reviews/
+docs/slices-build-report.md
+docs/*MDIC*
+docs/*mdic*
+docs/*Data-Agent*
+docs/*finals*
+docs/*presentation*
+docs/*deck*
+docs/*pitch*
+docs/*参赛*
+docs/*比赛*
+docs/*决赛*
+docs/*路演*
+docs/*答辩*
+docs/*演示*
+docs/*演讲*
+docs/*讲稿*
+docs/*评委*
+docs/*过夜*
+docs/*双agent*
+docs/*人话版*
+docs/*文献综述-MDA*
 docs/*.html
-
-# Local run outputs, benchmarks, screenshots, and demo/test corpora.
+apps/web/docs/finals-*
+services/agent/docs/research-kernel-A-design.md
 dogfood*
 reviews_output/
 bench_search/
+submission_package_*/
 output/
 outputs/
 artifacts/
@@ -73,22 +97,32 @@ apps/web/public/demo/
 apps/web/e2e/fixtures/
 services/agent/fixtures/contract/
 services/agent/fixtures/demo/
+# MCP / QA 调试临时产物
 .playwright-mcp/
+# 根目录调试截图 (design-review / QA 一次性产物, 非源码; www/ 下的 web 资源不受影响)
 /*.png
 
-# --- Three services (apps / services / packages) ---
+# --- 三服务再架构 (apps / services / packages) ---
+# Node (web)
 node_modules/
 apps/web/dist/
+# Python (agent) — 注: fastapi/pytest 走系统 site-packages, 此处忽略本地 venv 与缓存
 __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+# r-analysis 本地语料产物 (RDS, 系统生成, 勿提交)
 services/r-analysis/**/*.rds
 services/r-analysis/**/*.meta.json
+# 注: apps/web/src/api/schema.d.ts (契约生成) 与 pnpm-lock.yaml 需提交, 不忽略
 .merge-snapshots/
 services/agent/.venv/
+# 零伪造闭环 demo 的产物 (runlog/corpus_hashes JSON, 每次跑脚本重新生成, 非源码)
 services/agent/demo_artifacts/
 
-# Open-source README product screenshots are tracked.
+# 开源 README 产品截图 (经审阅, 取自对外展示素材) 纳入版本控制
 !assets/
 !assets/*.png
+
+# Welcome 页静态素材：poster/产品截图入库随 dist 部署；17MB 宣传片 mp4 保持忽略（部署时单独 rsync）。
+!apps/web/public/media/*.jpg

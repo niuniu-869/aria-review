@@ -8,6 +8,8 @@ import type { ProvenanceMap, StructureResponse as ProvenanceStructureResponse } 
 import type {
   GapCandidate,
   GapDiscoverAccepted,
+  GapFeasibilityAccepted,
+  GapFeasibilityVerdictResult,
   GapPatchRequest,
   GapVerdictResult,
   GapVerifyAccepted,
@@ -873,6 +875,25 @@ export async function createProject(body: components["schemas"]["ProjectCreateRe
 
 export async function getProject(pid: number): Promise<ProjectDetail> {
   return handle<ProjectDetail>(await doFetch(`${BASE}/projects/${pid}`));
+}
+
+/** 项目改名（重名 409 PROJECT_NAME_EXISTS）。 */
+export async function renameProject(pid: number, name: string): Promise<Project> {
+  return handle<Project>(
+    await doFetch(`${BASE}/projects/${pid}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  );
+}
+
+/** 删除项目（204；子资源随 DB 级联删除，文献保留在全局库）。 */
+export async function deleteProject(pid: number): Promise<void> {
+  const res = await doFetch(`${BASE}/projects/${pid}`, { method: "DELETE" });
+  if (!res.ok) {
+    await handle(res);
+  }
 }
 
 export async function getProjectPapers(pid: number): Promise<{ papers: ProjectPaperItem[] }> {
@@ -1755,6 +1776,7 @@ export interface GapSseEvent {
     | "summarizing"
     | "discovering"
     | "verifying"
+    | "scouting"
     | "subagent_event"
     | "done"
     | "done_empty"
@@ -1840,6 +1862,26 @@ export async function verifyGap(pid: number, gapId: string): Promise<GapVerifyAc
 export async function getGapVerdict(pid: number, gapId: string): Promise<GapVerdictResult> {
   return handle<GapVerdictResult>(
     await doFetch(`${BASE}/projects/${pid}/gaps/${enc(gapId)}/verdict`),
+  );
+}
+
+/** POST :feasibility — 启动该 GAP 可行性核验（异步，202 → feasibility_run_id）。 */
+export async function verifyGapFeasibility(pid: number, gapId: string): Promise<GapFeasibilityAccepted> {
+  return handle<GapFeasibilityAccepted>(
+    await doFetch(`${BASE}/projects/${pid}/gaps/${enc(gapId)}:feasibility`, {
+      method: "POST",
+      timeoutMs: LONG_TASK_FETCH_TIMEOUT_MS,
+    }),
+  );
+}
+
+/** GET feasibility-verdict — 取可行性裁决 + 侦察证据包。 */
+export async function getGapFeasibilityVerdict(
+  pid: number,
+  gapId: string,
+): Promise<GapFeasibilityVerdictResult> {
+  return handle<GapFeasibilityVerdictResult>(
+    await doFetch(`${BASE}/projects/${pid}/gaps/${enc(gapId)}/feasibility-verdict`),
   );
 }
 

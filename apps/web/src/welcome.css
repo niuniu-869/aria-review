@@ -872,6 +872,10 @@
   .wel-gh span {
     display: none;
   }
+  /* 窄屏隐藏顶栏「工作原理」文字链接防溢出；03 区尾部入口仍在（codex P4） */
+  .wel-about-link {
+    display: none;
+  }
 
   .wel-cards,
   .wel-feats,

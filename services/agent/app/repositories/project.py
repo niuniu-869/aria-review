@@ -108,6 +108,37 @@ async def list_projects(
     return list(result.scalars().all())
 
 
+async def delete_project(
+    s: AsyncSession,
+    project_id: int,
+) -> bool:
+    """删除 Project 行；不存在返回 False。
+
+    子表（project_paper/note/draft/corpus/...）靠 DB ondelete=CASCADE 级联；
+    Paper 是全局共享实体，无 project 级联，不受影响。
+    """
+    proj = await get_project(s, project_id)
+    if proj is None:
+        return False
+    await s.delete(proj)
+    await s.commit()
+    return True
+
+
+async def rename_project(
+    s: AsyncSession,
+    project_id: int,
+    name: str,
+) -> Project:
+    """重命名 Project 并提交；重名触发 uq_project_name 唯一约束 → IntegrityError 抛给调用方。"""
+    q = select(Project).where(Project.id == project_id)
+    proj = (await s.execute(q)).scalar_one()
+    proj.name = name
+    await s.commit()
+    await s.refresh(proj)
+    return proj
+
+
 async def list_project_papers(
     s: AsyncSession,
     project_id: int,

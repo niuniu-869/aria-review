@@ -157,18 +157,58 @@ def _research_payload() -> dict[str, Any]:
         {"gap_id": "g4", "verdict": v4, "evidence": e4},
         {"gap_id": "g5", "verdict": v5, "evidence": e5},
     )
+    feasibility_verdict = {
+        "gap_id": "g2", "verdict": "buildable", "data_status": "available",
+        "method_status": "supported", "resource_status": "modest",
+        "rationale": "数据有明确可访问证据、方法组件基座 ≥2 条且非重资源 → 方向可做（buildable）。",
+        "decided_by": "deterministic",
+        "signals": {
+            "data_status": "available", "method_status": "supported", "resource_status": "modest",
+            "dataset_count": 1, "open_dataset_count": 1, "dedup_building_blocks": 2,
+            "method_query_suspected": False, "negative_kinds": [],
+        },
+    }
+    feasibility_pack = {
+        "gap_id": "g2",
+        "data_availability": {
+            "query": "上市公司年报 MD&A 开放数据", "provider": "openalex",
+            "datasets": [{
+                "name": "巨潮资讯年报语料", "source": "巨潮资讯公开披露",
+                "url": "https://www.cninfo.com.cn/", "access": "open", "kind": "annual_reports",
+            }],
+        },
+        "method_base": {
+            "query": "文本嵌入 语气测量",
+            "building_blocks": [
+                {"kind": "measurement", "name": "Sentence-BERT embeddings", "doi": "10.18653/v1/D19-1410", "has_code": True},
+                {"kind": "baseline", "name": "Loughran-McDonald dictionary", "doi": "10.1111/j.1540-6261.2010.01625.x", "has_code": True},
+            ],
+        },
+        "resource_scale": {
+            "scale_flag": "modest", "typical_sample_size": "10k-50k reports",
+            "typical_compute": "single GPU or CPU batch inference", "note": "可按行业分批处理。",
+        },
+        "negative_evidence": [],
+        "notes": ["开放年报可直接下载，方法组件均有公开实现。"],
+        "skipped": [],
+    }
+    feasibility_result = {"gap_id": "g2", "verdict": feasibility_verdict, "pack": feasibility_pack}
     rid = "run_gap_001"
     return {
-        "FIXTURE_PID": 5, "FIXTURE_CID": "rc_mda_001", "FIXTURE_RUN_ID": rid, "FIXTURE_VERIFY_RUN_ID": "run_verify_001",
+        "FIXTURE_PID": 5, "FIXTURE_CID": "rc_mda_001", "FIXTURE_RUN_ID": rid,
+        "FIXTURE_VERIFY_RUN_ID": "run_verify_001", "FIXTURE_FEASIBILITY_RUN_ID": "run_feasibility_001",
         "THRESHOLDS": thresholds,
         "verdictValuableG2": v2, "verdictValuableG4": v4, "verdictLikelyFilledG3": v3, "verdictInconclusiveG5": v5,
         "evidenceG2": e2, "evidenceG3": e3, "evidenceG5": e5, "evidenceG4": e4,
         "verdictResultG2": r2, "verdictResultG3": r3, "verdictResultG4": r4, "verdictResultG5": r5,
         "ALL_VERDICT_RESULTS": [r2, r3, r4, r5],
+        "feasibilityVerdictG2": feasibility_verdict, "feasibilityPackG2": feasibility_pack,
+        "feasibilityResultG2": feasibility_result,
         "gapDraftConcept": g1, "gapVerifiedMethod": g2, "gapVerifiedTheory": g3, "gapAcceptedConcept": g4, "gapDraftMethod": g5,
         "ALL_GAPS": all_gaps,
         "scratchpadState": {"run_id": rid, "run_status": "done", "entries": all_gaps, "updated_at": "2026-06-16T03:14:07Z"},
         "discoverAccepted": {"run_id": rid}, "verifyAccepted": {"verify_run_id": "run_verify_001"},
+        "feasibilityAccepted": {"feasibility_run_id": "run_feasibility_001"},
         "SCRATCHPAD_TICKS": [
             {"run_id": rid, "run_status": "running", "entries": [g1], "updated_at": "2026-06-16T03:14:01Z"},
             {"run_id": rid, "run_status": "running", "entries": [g1, g5], "updated_at": "2026-06-16T03:14:03Z"},

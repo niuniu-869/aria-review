@@ -30,6 +30,7 @@ import {
 import { AnalysisFrame } from "../components/AnalysisFrame";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { ProjectGate } from "../components/ProjectGate";
+import { track } from "../lib/track";
 
 // ---------------------------------------------------------------------------
 // 数据流闸门：CorpusStatusCard（复用 M2 逻辑）
@@ -248,6 +249,12 @@ export function AnalysisView() {
   const pidNum = Number(pid);
   const navigate = useNavigate();
   const health = useHealth();
+
+  useEffect(() => {
+    track("analysis_view", undefined, pidNum);
+    // 每次分析区视图组件挂载仅上报一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 当前视图（URL 参数 → 默认 overview）
   const activeView: AnalysisViewId =

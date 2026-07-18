@@ -7,8 +7,12 @@
 import researchFixtures from "../../../../packages/contracts/fixtures/research_gap.json" with { type: "json" };
 import type {
   EvidencePack,
+  FeasibilityPack,
+  FeasibilityVerdict,
   GapCandidate,
   GapDiscoverAccepted,
+  GapFeasibilityAccepted,
+  GapFeasibilityVerdictResult,
   GapVerdictResult,
   GapVerifyAccepted,
   ScratchpadState,
@@ -21,6 +25,7 @@ const data = researchFixtures as unknown as {
   FIXTURE_CID: string;
   FIXTURE_RUN_ID: string;
   FIXTURE_VERIFY_RUN_ID: string;
+  FIXTURE_FEASIBILITY_RUN_ID: string;
   THRESHOLDS: ValueThresholds;
   verdictValuableG2: ValueVerdict;
   verdictValuableG4: ValueVerdict;
@@ -35,6 +40,9 @@ const data = researchFixtures as unknown as {
   verdictResultG4: GapVerdictResult;
   verdictResultG5: GapVerdictResult;
   ALL_VERDICT_RESULTS: GapVerdictResult[];
+  feasibilityVerdictG2: FeasibilityVerdict;
+  feasibilityPackG2: FeasibilityPack;
+  feasibilityResultG2: GapFeasibilityVerdictResult;
   gapDraftConcept: GapCandidate;
   gapVerifiedMethod: GapCandidate;
   gapVerifiedTheory: GapCandidate;
@@ -44,6 +52,7 @@ const data = researchFixtures as unknown as {
   scratchpadState: ScratchpadState;
   discoverAccepted: GapDiscoverAccepted;
   verifyAccepted: GapVerifyAccepted;
+  feasibilityAccepted: GapFeasibilityAccepted;
   SCRATCHPAD_TICKS: ScratchpadState[];
 };
 
@@ -51,6 +60,7 @@ export const FIXTURE_PID = data.FIXTURE_PID;
 export const FIXTURE_CID = data.FIXTURE_CID;
 export const FIXTURE_RUN_ID = data.FIXTURE_RUN_ID;
 export const FIXTURE_VERIFY_RUN_ID = data.FIXTURE_VERIFY_RUN_ID;
+export const FIXTURE_FEASIBILITY_RUN_ID = data.FIXTURE_FEASIBILITY_RUN_ID;
 export const THRESHOLDS = data.THRESHOLDS;
 
 export const verdictValuableG2 = data.verdictValuableG2;
@@ -68,6 +78,9 @@ export const verdictResultG3 = data.verdictResultG3;
 export const verdictResultG4 = data.verdictResultG4;
 export const verdictResultG5 = data.verdictResultG5;
 export const ALL_VERDICT_RESULTS = data.ALL_VERDICT_RESULTS;
+export const feasibilityVerdictG2 = data.feasibilityVerdictG2;
+export const feasibilityPackG2 = data.feasibilityPackG2;
+export const feasibilityResultG2 = data.feasibilityResultG2;
 
 export const gapDraftConcept = data.gapDraftConcept;
 export const gapVerifiedMethod = data.gapVerifiedMethod;
@@ -79,4 +92,5 @@ export const ALL_GAPS = data.ALL_GAPS;
 export const scratchpadState = data.scratchpadState;
 export const discoverAccepted = data.discoverAccepted;
 export const verifyAccepted = data.verifyAccepted;
+export const feasibilityAccepted = data.feasibilityAccepted;
 export const SCRATCHPAD_TICKS = data.SCRATCHPAD_TICKS;

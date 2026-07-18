@@ -60,4 +60,16 @@ describe("GapRunTimeline", () => {
     expect(screen.getByText("价值核验中")).toBeInTheDocument();
     expect(screen.getByText(/核验 agent 完成一轮/)).toBeInTheDocument();
   });
+
+  it("feasibility-scout 活动明确标注为可行性核验", () => {
+    render(
+      <GapRunTimeline
+        progress={mk({
+          phase: "verifying",
+          activity: [{ type: "subagent_event", skill: "feasibility-scout", child_type: "run_complete" }],
+        })}
+      />,
+    );
+    expect(screen.getByText("可行性核验 agent 收束")).toBeInTheDocument();
+  });
 });

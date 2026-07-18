@@ -50,7 +50,7 @@ describe("useArtifactCanvas", () => {
     const { result } = renderHook(() => useArtifactCanvas(5), { wrapper });
 
     await act(async () => {
-      await result.current.handleRunComplete({ runId: "10", finalOutput: "# 新综述\n正文", eventSeq: 7 });
+      await result.current.handleRunComplete({ runId: "10", finalOutput: "# 新综述\n正文", eventSeq: 7, status: "done" });
     });
 
     await waitFor(() => {
@@ -92,8 +92,8 @@ describe("useArtifactCanvas", () => {
     const { result } = renderHook(() => useArtifactCanvas(5), { wrapper });
 
     await act(async () => {
-      await result.current.handleRunComplete({ runId: "10", finalOutput: "# 去重综述", eventSeq: 1 });
-      await result.current.handleRunComplete({ runId: "10", finalOutput: "# 去重综述", eventSeq: 1 });
+      await result.current.handleRunComplete({ runId: "10", finalOutput: "# 去重综述", eventSeq: 1, status: "done" });
+      await result.current.handleRunComplete({ runId: "10", finalOutput: "# 去重综述", eventSeq: 1, status: "done" });
     });
 
     expect(mutateAsync).toHaveBeenCalledTimes(1);

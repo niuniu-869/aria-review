@@ -2,12 +2,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addPapersFromSearch,
+  ApiError,
   backfillFulltext,
   backfillMetadata,
   createArtifact,
   createProject,
   createRun,
   deleteArtifact,
+  deleteProject,
   extractStructured,
   getPaperDetail,
   getAiJob,
@@ -24,10 +26,13 @@ import {
   materializeCorpus,
   patchArtifact,
   patchInclusion,
+  renameProject,
   discoverGaps,
   getScratchpad,
   verifyGap,
   getGapVerdict,
+  verifyGapFeasibility,
+  getGapFeasibilityVerdict,
   patchGap,
 } from "./client";
 import { isTerminalScratchpadRunStatus } from "./runStatus";
@@ -35,6 +40,8 @@ import { asRCorpusId } from "./corpusIds";
 import type {
   GapCandidate,
   GapDiscoverAccepted,
+  GapFeasibilityAccepted,
+  GapFeasibilityVerdictResult,
   GapPatchRequest,
   GapVerdictResult,
   GapVerifyAccepted,
@@ -156,6 +163,28 @@ export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: createProject,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
+/** 项目改名（qa-20260717 F-15）。 */
+export function useRenameProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ pid, name }: { pid: number; name: string }) => renameProject(pid, name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
+/** 项目删除（qa-20260717 F-15）。 */
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (pid: number) => deleteProject(pid),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["projects"] });
     },
@@ -471,6 +500,58 @@ export function useGapVerdict(
     retry: false,
     // poll: 裁决异步产出，拿到数据前（含 verify 后短暂 404）按 3-5s 轮询；拿到即停（codex B5-P2）。
     refetchInterval: opts?.poll ? (query) => (query.state.data ? false : pollMs) : false,
+  });
+}
+
+/** 启动该 GAP 可行性核验；与价值核验完全独立。 */
+export function useFeasibilityVerify(pid: number) {
+  const qc = useQueryClient();
+  return useMutation<GapFeasibilityAccepted, Error, { gapId: string }>({
+    mutationFn: ({ gapId }) => verifyGapFeasibility(pid, gapId),
+    onSuccess: (_data, { gapId }) => {
+      void qc.invalidateQueries({ queryKey: ["gapFeasibilityVerdict", pid, gapId] });
+    },
+  });
+}
+
+/**
+ * 取可行性裁决；启动任务后按 4 秒轮询，拿到裁决或 job 失败后由调用方关闭 poll。
+ * F-20: 未核验的 409/兼容旧描述中的 404 不再以错误上抛（轮询期间刷屏），
+ * 静默为 { pending: true } 哨兵；调用方按“未就绪”处理（只显示核验按钮）。
+ */
+export type FeasibilityVerdictData = GapFeasibilityVerdictResult | { pending: true };
+
+/** 判断可行性裁决查询数据是否为「未就绪」哨兵。 */
+export function isFeasibilityVerdictPending(
+  data: FeasibilityVerdictData | undefined,
+): data is { pending: true } {
+  return !!data && "pending" in data && (data as { pending: unknown }).pending === true;
+}
+
+export function useFeasibilityVerdict(
+  pid: number,
+  gapId: string | null,
+  opts?: { enabled?: boolean; poll?: boolean; pollMs?: number },
+) {
+  const pollMs = opts?.pollMs ?? 4000;
+  return useQuery<FeasibilityVerdictData, Error>({
+    queryKey: ["gapFeasibilityVerdict", pid, gapId],
+    queryFn: async () => {
+      try {
+        return await getGapFeasibilityVerdict(pid, gapId as string);
+      } catch (err) {
+        if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
+          return { pending: true };
+        }
+        throw err;
+      }
+    },
+    enabled: pid > 0 && !!gapId && (opts?.enabled ?? true),
+    retry: false,
+    // pending 哨兵视为尚未拿到裁决，继续轮询；拿到真实裁决即停（codex B5-P2）
+    refetchInterval: opts?.poll
+      ? (query) => (query.state.data && !isFeasibilityVerdictPending(query.state.data) ? false : pollMs)
+      : false,
   });
 }
 

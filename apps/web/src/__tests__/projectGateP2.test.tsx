@@ -24,6 +24,8 @@ const {
   mockUseScratchpad,
   mockUseVerifyGap,
   mockUseGapVerdict,
+  mockUseFeasibilityVerify,
+  mockUseFeasibilityVerdict,
   mockUsePatchGap,
   mockUseAiJob,
 } = vi.hoisted(() => ({
@@ -35,6 +37,8 @@ const {
   mockUseScratchpad: vi.fn(),
   mockUseVerifyGap: vi.fn(),
   mockUseGapVerdict: vi.fn(),
+  mockUseFeasibilityVerify: vi.fn(),
+  mockUseFeasibilityVerdict: vi.fn(),
   mockUsePatchGap: vi.fn(),
   mockUseAiJob: vi.fn(),
 }));
@@ -54,6 +58,8 @@ vi.mock("../api/agentHooks", async (importOriginal) => {
     useScratchpad: (...args: unknown[]) => mockUseScratchpad(...args),
     useVerifyGap: (...args: unknown[]) => mockUseVerifyGap(...args),
     useGapVerdict: (...args: unknown[]) => mockUseGapVerdict(...args),
+    useFeasibilityVerify: (...args: unknown[]) => mockUseFeasibilityVerify(...args),
+    useFeasibilityVerdict: (...args: unknown[]) => mockUseFeasibilityVerdict(...args),
     usePatchGap: (...args: unknown[]) => mockUsePatchGap(...args),
     useAiJob: (...args: unknown[]) => mockUseAiJob(...args),
   };
@@ -127,6 +133,12 @@ beforeEach(() => {
   mockUseScratchpad.mockReturnValue({ data: null, isLoading: false, error: null });
   mockUseVerifyGap.mockReturnValue({ mutate: vi.fn(), isPending: false, isError: false, error: null, variables: null });
   mockUseGapVerdict.mockReturnValue({ data: null, isError: false, error: null });
+  mockUseFeasibilityVerify.mockReturnValue({ mutate: vi.fn(), isPending: false, isError: false, error: null, variables: null });
+  mockUseFeasibilityVerdict.mockReturnValue({
+    data: null,
+    isError: true,
+    error: new ApiError("GAP_NOT_FEASIBILITY_CHECKED", 409, "尚未核验"),
+  });
   mockUsePatchGap.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null });
   mockUseAiJob.mockReturnValue({ data: null, isLoading: false, error: null });
   mockProjectNoCorpus();
@@ -315,7 +327,7 @@ describe("三大页面 project 查询三态", () => {
     );
     expect(screen.getByText(/价值核验进行中/)).toBeInTheDocument();
     expect(screen.getByText(/每 4 秒自动刷新/)).toBeInTheDocument();
-    expect(mockUseAiJob).toHaveBeenLastCalledWith(5, 123, { enabled: true, pollMs: 4000 });
+    expect(mockUseAiJob).toHaveBeenCalledWith(5, 123, { enabled: true, pollMs: 4000 });
     expect(mockUseGapVerdict).toHaveBeenLastCalledWith(5, "gap_pending", { poll: true, pollMs: 4000 });
   });
 });

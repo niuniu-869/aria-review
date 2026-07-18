@@ -87,6 +87,64 @@ def test_healthz_exempt(authz_client):
     assert r.status_code == 200, r.text  # 豁免路径无需登录
 
 
+# --------------------------- F-14: 全局守卫 CSRF Origin 校验 ---------------------------
+
+
+def test_csrf_evil_origin_rejected(authz_client):
+    c, ids = authz_client
+    c.cookies.set(auth.COOKIE_NAME, ids["tok_a"])
+    r = c.post("/projects", json={"name": "CSRF-a"},
+               headers={"Origin": "https://evil.example.com"})
+    assert r.status_code == 403, r.text
+    assert r.json()["code"] == "CSRF_REJECTED"
+
+
+def test_csrf_trusted_origin_passes(authz_client):
+    c, ids = authz_client
+    c.cookies.set(auth.COOKIE_NAME, ids["tok_a"])
+    # settings.cors_origins 默认含 http://localhost:8080（trusted_origins 未配时回退到它）
+    r = c.post("/projects", json={"name": "CSRF-b"},
+               headers={"Origin": "http://localhost:8080"})
+    assert r.status_code == 201, r.text
+
+
+def test_csrf_no_origin_no_referer_passes(authz_client):
+    c, ids = authz_client
+    c.cookies.set(auth.COOKIE_NAME, ids["tok_a"])
+    r = c.post("/projects", json={"name": "CSRF-c"})  # curl/脚本语义：无来源头，放行
+    assert r.status_code == 201, r.text
+
+
+def test_csrf_referer_fallback_rejected(authz_client):
+    c, ids = authz_client
+    c.cookies.set(auth.COOKIE_NAME, ids["tok_a"])
+    r = c.post("/projects", json={"name": "CSRF-d"},
+               headers={"Referer": "https://evil.example.com/page"})
+    assert r.status_code == 403, r.text
+    assert r.json()["code"] == "CSRF_REJECTED"
+
+
+def test_csrf_auth_login_exempt(authz_client):
+    c, _ = authz_client
+    # /auth/ 前缀豁免（login/register 是文档化的 CSRF 豁免入口）：evil Origin 不拦截
+    r = c.post("/auth/login", json={"email": "a@authz.io", "password": "pw12345678"},
+               headers={"Origin": "https://evil.example.com"})
+    assert r.status_code == 200, r.text
+
+
+# --------------------------- F-23: 422 中文化 ---------------------------
+
+
+def test_validation_error_chinese(authz_client):
+    c, _ = authz_client
+    r = c.post("/auth/register", json={"email": "x@y.io", "password": "abc"})
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "密码" in body["message"] and "8" in body["message"]
+    assert body["details"]["errors"]
+
+
 def test_public_stats_exempt(authz_client):
     c, _ = authz_client
     r = c.get("/public/stats")  # 无 cookie：authz 豁免的公开着陆页统计

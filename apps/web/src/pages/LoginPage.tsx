@@ -10,6 +10,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError, authLogin, authRegister } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { track } from "../lib/track";
 
 export function LoginPage() {
   // 初始模式支持 ?mode=register（Welcome 页「开始使用」CTA 直达注册态）
@@ -40,6 +41,7 @@ export function LoginPage() {
     try {
       if (mode === "login") {
         await authLogin({ email, password });
+        track("login_success");
       } else {
         await authRegister({ email, password, invite_code: invite || undefined });
       }

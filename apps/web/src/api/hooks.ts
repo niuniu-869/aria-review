@@ -1,6 +1,7 @@
 // TanStack Query 封装 (服务端态)
 import { useQuery } from "@tanstack/react-query";
 import {
+  ApiError,
   getAuthorProduction,
   getAuthors,
   getCitedRefs,
@@ -39,6 +40,11 @@ export function useOverview(projectId: string, corpusId: RCorpusId, enabled: boo
     queryKey: ["overview", projectId, corpusId],
     queryFn: () => getOverview(projectId, corpusId),
     enabled,
+    // F-20: 瞬时 502/409 最多重试 2 次；422 数据质量失败为终态（数据不变重试无益），不重试
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 422) return false;
+      return failureCount < 3;
+    },
   });
 }
 

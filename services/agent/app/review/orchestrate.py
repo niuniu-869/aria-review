@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any
 
@@ -29,12 +30,21 @@ from app.harness.llm import OverrideLLMConfig
 from app.review.read import PaperSummary, summarize_papers
 from app.review.synthesis import (
     ReviewEvent,
+    backfill_evidence_anchors,
     build_provenance_and_anchors,
     generate_review,
 )
 from app.review.templates import Template
 
 logger = logging.getLogger("agent.review.orchestrate")
+
+# F-13：[[anchor:<id>]] / [[/anchor]] 包裹标记（provenance 注入，不计入综述正文字数）
+_ANCHOR_MARK_RE = re.compile(r"\[\[/?anchor(?::[^\]]*)?\]\]")
+
+
+def _strip_anchor_marks(md: str) -> str:
+    """去掉 provenance 注入的 anchor 包裹标记，得到可审计的正文文本。"""
+    return _ANCHOR_MARK_RE.sub("", md)
 
 
 def _strip_preamble(md: str) -> str:
@@ -78,7 +88,8 @@ async def run_review(
           review_md:         综述 Markdown 全文
           summaries:         list[PaperSummary]（含失败占位）
           validation_summary: dict  {total_segments, valid_citations,
-                                     fabricated_citations, fabricated_spans}
+                                     fabricated_citations, fabricated_spans,
+                                     review_chars（剔除 anchor 标记的正文字数）}
           evidence_refs:     list[EvidenceRef]
           provenance_map:    dict[str, dict]  # B4b/B4c：occurrence anchor_id →
                                               # {paper_id, attachment_id, page_no,
@@ -90,7 +101,7 @@ async def run_review(
                                total_papers: int,          # 输入论文总数
                                success_summaries: int,     # 成功摘要数
                                error_summaries: int,       # 失败摘要数（占位）
-                               review_chars: int,          # 综述字数
+                               review_chars: int,          # 综述正文字数（剔除 anchor 标记）
                                valid_citations: int,       # 有效引用数
                                fabricated_citations: int,  # 伪造引用数
                                elapsed_map_s: float,       # map 阶段耗时（秒）
@@ -180,15 +191,26 @@ async def run_review(
             review_md, summaries, records
         )
         review_md = annotated_md
+        # F-18：把已定位 key_points 的块级锚点（页/块/bbox/章节/anchor_id）回填到同篇
+        # EvidenceRef（此前 from_record 这些字段恒 None）。无 DocumentStructure 的论文
+        # 保持 None（防御性，现状不变）。原地修改，须在调用方 to_dict 之前执行。
+        backfilled = backfill_evidence_anchors(evidence_refs, summaries, records)
+        if backfilled:
+            logger.info(f"[run_review] 证据锚点回填：{backfilled}/{len(evidence_refs)} 条 EvidenceRef 带块级坐标")
 
     valid_count = validation_summary.get("valid_citations", 0)
     fabricated_count = validation_summary.get("fabricated_citations", 0)
+
+    # F-13：字数按剔除 [[anchor:]] 包裹标记后的正文计（标记是溯源注入物，非正文），
+    # 并同值写入 validation_summary，与 stats 同源可审计。
+    review_chars = len(_strip_anchor_marks(review_md))
+    validation_summary["review_chars"] = review_chars
 
     stats: dict[str, Any] = {
         "total_papers": len(paper_markdowns),
         "success_summaries": success_count,
         "error_summaries": error_count,
-        "review_chars": len(review_md),
+        "review_chars": review_chars,
         "valid_citations": valid_count,
         "fabricated_citations": fabricated_count,
         # B4b/B4c：本次注入的 occurrence anchor（= provenance 条目）数。
@@ -199,7 +221,7 @@ async def run_review(
     }
 
     logger.info(
-        f"[run_review] 完成：综述 {len(review_md)} 字符，"
+        f"[run_review] 完成：综述正文 {review_chars} 字符，"
         f"有效引用={valid_count}，伪造引用={fabricated_count}，"
         f"总耗时={t_total:.1f}s"
     )

@@ -132,6 +132,26 @@
   else sprintf("%s. %s[J].", au_str, r$title)
 }
 
+# APA-7 题名 sentence case (F-19)：仅当题名(近)全大写（无小写字母，或有大小写字符中
+# >=90% 为大写）时转换——先整体小写化，再大写首字母与冒号后第一个字母；
+# 混合大小写题名原样保留。
+.sentence_case <- function(title) {
+  t <- trimws(title %||% "")
+  if (!nzchar(t)) return(t)
+  chars <- strsplit(gsub("[^[:alpha:]]", "", t), "", fixed = TRUE)[[1]]
+  cased <- chars[tolower(chars) != toupper(chars)]
+  if (!length(cased)) return(t)
+  if (mean(cased == toupper(cased)) < 0.9) return(t)
+  t <- tolower(t)
+  substr(t, 1L, 1L) <- toupper(substr(t, 1L, 1L))
+  m <- regexpr(":[[:space:]]*[[:alpha:]]", t, perl = TRUE)
+  if (m > 0L) {
+    i <- m + attr(m, "match.length") - 1L
+    substr(t, i, i) <- toupper(substr(t, i, i))
+  }
+  t
+}
+
 .fmt_apa <- function(r) {
   au_str <- if (length(r$authors) == 0L) "Anon."
             else if (length(r$authors) == 1L) r$authors[1]
@@ -139,7 +159,7 @@
             else paste(paste(r$authors[-length(r$authors)], collapse = ", "),
                        "&", r$authors[length(r$authors)])
   yr <- if (nzchar(as.character(r$year %||% ""))) as.character(r$year) else "n.d."
-  head <- sprintf("%s (%s). %s.", au_str, yr, r$title)
+  head <- sprintf("%s (%s). %s.", au_str, yr, .sentence_case(r$title))
   # 来源段(Journal, Vol(Issue), Pages.)各段缺则省略, 避免 ", (), ."
   src_parts <- Filter(nzchar, c(trimws(r$journal %||% ""), .vi_seg(r$volume, r$issue), trimws(r$pages %||% "")))
   base <- if (length(src_parts)) sprintf("%s %s.", head, paste(src_parts, collapse = ", ")) else head

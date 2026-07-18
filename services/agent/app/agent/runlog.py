@@ -1,8 +1,10 @@
 """Task P2-4 — RunLog（可验证运行日志）聚合。
 
 把"一次 agent 运行"的全部可审计来源聚合成一个 JSON-able dict（schema=runlog/v1）：
-  - run：基本元信息（含从 messages 抽取的 prompt、从 rounds_log 抽取的 model_used）
+  - run：基本元信息（含从 messages 抽取的 prompt、从 state 抽取的 model_used，
+    旧快照回退 rounds_log 扫描）
   - messages：完整对话（来自 get_state(...).messages，恢复唯一真源；非原始 snapshot dict）
+  - rounds_log：逐轮摘要（含每轮 tool_calls，供 manifest 计数自洽复算）
   - events：哈希链事件流（来自 list_events，按 seq 升序，含 prev_hash/event_hash）
   - tool_invocations：写工具幂等审计（ToolInvocation 表，按 id 升序）
   - evidence_refs：经校验/筛选后用于综述的证据快照（run.evidence_refs）
@@ -61,11 +63,27 @@ def _extract_prompt(messages: list[dict]) -> str:
 
 
 def _extract_model_used(rounds_log: list[dict]) -> str:
-    """取最后一条带 "model" 键的 rounds_log 条目的 model（无则 ""）。"""
+    """取最后一条带 "model" 键的 rounds_log 条目的 model（无则 ""）。
+
+    仅作回退：当前 engine 不把 model 写进 rounds_log，权威值在 LoopState.model_used。
+    """
     for entry in reversed(rounds_log or []):
         if isinstance(entry, dict) and entry.get("model"):
             return str(entry["model"])
     return ""
+
+
+def _count_tool_calls(rounds_log: list[dict]) -> int:
+    """实际工具调用总数 = 各 rounds_log 条目 tool_calls 数组长度之和（F-13）。
+
+    ToolInvocation 表只记写工具幂等审计，不能反映真实工具用量；每轮实际调用数
+    在 rounds_log 的 tool_calls 摘要数组里（engine step_once 追加）。
+    """
+    return sum(
+        len(e.get("tool_calls") or [])
+        for e in (rounds_log or [])
+        if isinstance(e, dict)
+    )
 
 
 async def build_runlog(s: AsyncSession, run_id: int) -> dict:
@@ -77,6 +95,13 @@ async def build_runlog(s: AsyncSession, run_id: int) -> dict:
     # messages 来自重建的 LoopState（恢复唯一真源），而非原始 snapshot dict
     state = await agent_run_repo.get_state(s, run_id)
     messages = list(state.messages) if state is not None else []
+    # F-08：model_used 权威值在 state.model_used（engine step_once 每轮写入）；
+    # rounds_log 扫描仅作回退（旧快照可能缺 model_used）。
+    model_used = ""
+    if state is not None and state.model_used:
+        model_used = state.model_used
+    else:
+        model_used = _extract_model_used(run.rounds_log or [])
 
     # 事件流（按 seq 升序）
     raw_events = await agent_run_repo.list_events(s, run_id)
@@ -114,6 +139,7 @@ async def build_runlog(s: AsyncSession, run_id: int) -> dict:
     evidence_refs = run.evidence_refs or []
     validation_summary = run.validation_summary or {}
     fabricated_spans = validation_summary.get("fabricated_spans", [])
+    rounds_log = run.rounds_log or []
 
     body = {
         "schema_version": RUNLOG_SCHEMA_VERSION,
@@ -122,11 +148,14 @@ async def build_runlog(s: AsyncSession, run_id: int) -> dict:
             "project_id": run.project_id,
             "status": run.status,
             "prompt": _extract_prompt(messages),
-            "model_used": _extract_model_used(run.rounds_log or []),
+            "model_used": model_used,
             "created_at": run.created_at.isoformat() if run.created_at is not None else None,
             "final_output": run.final_output,
         },
         "messages": messages,
+        # F-13：随日志携带 rounds_log（每轮 tool_calls 摘要），manifest 的
+        # tool_invocation_count 据此可自洽复算（见 runlog_verify.manifest_counts）。
+        "rounds_log": rounds_log,
         "events": events,
         "tool_invocations": tool_invocations,
         "evidence_refs": evidence_refs,
@@ -135,7 +164,9 @@ async def build_runlog(s: AsyncSession, run_id: int) -> dict:
 
     manifest = {
         "event_count": len(events),
-        "tool_invocation_count": len(tool_invocations),
+        # F-13：实际工具调用总数（rounds_log tool_calls 之和），
+        # 不再等同于 ToolInvocation 写审计行数（那只覆盖写工具）。
+        "tool_invocation_count": _count_tool_calls(rounds_log),
         "evidence_count": len(evidence_refs),
         # codex P0：取自 validation_summary，不从 evidence_refs 计数
         "fabricated_count": validation_summary.get("fabricated_citations", 0),

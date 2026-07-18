@@ -3,6 +3,7 @@
   "FIXTURE_CID": "rc_mda_001",
   "FIXTURE_RUN_ID": "run_gap_001",
   "FIXTURE_VERIFY_RUN_ID": "run_verify_001",
+  "FIXTURE_FEASIBILITY_RUN_ID": "run_feasibility_001",
   "THRESHOLDS": {
     "reverse_hit_high": 25,
     "reverse_hit_low": 3
@@ -537,6 +538,135 @@
       }
     }
   ],
+  "feasibilityVerdictG2": {
+    "gap_id": "g2",
+    "verdict": "buildable",
+    "data_status": "available",
+    "method_status": "supported",
+    "resource_status": "modest",
+    "rationale": "数据有明确可访问证据、方法组件基座 ≥2 条且非重资源 → 方向可做（buildable）。",
+    "decided_by": "deterministic",
+    "signals": {
+      "data_status": "available",
+      "method_status": "supported",
+      "resource_status": "modest",
+      "dataset_count": 1,
+      "open_dataset_count": 1,
+      "dedup_building_blocks": 2,
+      "method_query_suspected": false,
+      "negative_kinds": []
+    }
+  },
+  "feasibilityPackG2": {
+    "gap_id": "g2",
+    "data_availability": {
+      "query": "上市公司年报 MD&A 开放数据",
+      "provider": "openalex",
+      "datasets": [
+        {
+          "name": "巨潮资讯年报语料",
+          "source": "巨潮资讯公开披露",
+          "url": "https://www.cninfo.com.cn/",
+          "access": "open",
+          "kind": "annual_reports"
+        }
+      ]
+    },
+    "method_base": {
+      "query": "文本嵌入 语气测量",
+      "building_blocks": [
+        {
+          "kind": "measurement",
+          "name": "Sentence-BERT embeddings",
+          "doi": "10.18653/v1/D19-1410",
+          "has_code": true
+        },
+        {
+          "kind": "baseline",
+          "name": "Loughran-McDonald dictionary",
+          "doi": "10.1111/j.1540-6261.2010.01625.x",
+          "has_code": true
+        }
+      ]
+    },
+    "resource_scale": {
+      "scale_flag": "modest",
+      "typical_sample_size": "10k-50k reports",
+      "typical_compute": "single GPU or CPU batch inference",
+      "note": "可按行业分批处理。"
+    },
+    "negative_evidence": [],
+    "notes": [
+      "开放年报可直接下载，方法组件均有公开实现。"
+    ],
+    "skipped": []
+  },
+  "feasibilityResultG2": {
+    "gap_id": "g2",
+    "verdict": {
+      "gap_id": "g2",
+      "verdict": "buildable",
+      "data_status": "available",
+      "method_status": "supported",
+      "resource_status": "modest",
+      "rationale": "数据有明确可访问证据、方法组件基座 ≥2 条且非重资源 → 方向可做（buildable）。",
+      "decided_by": "deterministic",
+      "signals": {
+        "data_status": "available",
+        "method_status": "supported",
+        "resource_status": "modest",
+        "dataset_count": 1,
+        "open_dataset_count": 1,
+        "dedup_building_blocks": 2,
+        "method_query_suspected": false,
+        "negative_kinds": []
+      }
+    },
+    "pack": {
+      "gap_id": "g2",
+      "data_availability": {
+        "query": "上市公司年报 MD&A 开放数据",
+        "provider": "openalex",
+        "datasets": [
+          {
+            "name": "巨潮资讯年报语料",
+            "source": "巨潮资讯公开披露",
+            "url": "https://www.cninfo.com.cn/",
+            "access": "open",
+            "kind": "annual_reports"
+          }
+        ]
+      },
+      "method_base": {
+        "query": "文本嵌入 语气测量",
+        "building_blocks": [
+          {
+            "kind": "measurement",
+            "name": "Sentence-BERT embeddings",
+            "doi": "10.18653/v1/D19-1410",
+            "has_code": true
+          },
+          {
+            "kind": "baseline",
+            "name": "Loughran-McDonald dictionary",
+            "doi": "10.1111/j.1540-6261.2010.01625.x",
+            "has_code": true
+          }
+        ]
+      },
+      "resource_scale": {
+        "scale_flag": "modest",
+        "typical_sample_size": "10k-50k reports",
+        "typical_compute": "single GPU or CPU batch inference",
+        "note": "可按行业分批处理。"
+      },
+      "negative_evidence": [],
+      "notes": [
+        "开放年报可直接下载，方法组件均有公开实现。"
+      ],
+      "skipped": []
+    }
+  },
   "gapDraftConcept": {
     "gap_id": "g1",
     "theme": "MD&A 文本特征与信息含量",
@@ -929,6 +1059,9 @@
   },
   "verifyAccepted": {
     "verify_run_id": "run_verify_001"
+  },
+  "feasibilityAccepted": {
+    "feasibility_run_id": "run_feasibility_001"
   },
   "SCRATCHPAD_TICKS": [
     {

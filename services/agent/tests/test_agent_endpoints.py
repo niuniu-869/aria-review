@@ -352,6 +352,7 @@ async def test_get_run_detail(agent_client):
     assert detail["runId"] == run_id
     assert detail["status"] == "done"
     assert detail["finalOutput"] == "最终输出"
+    assert detail["prompt"] == "详情测试"  # RunDetail.prompt: 原始用户指令
 
 
 @pytest.mark.asyncio

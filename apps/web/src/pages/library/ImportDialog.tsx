@@ -4,10 +4,12 @@
  * 接受 PDF 多选或 ZIP，调用 POST /projects/{pid}/papers/import，
  * 显示 imported/skipped/failed 结果，成功后刷新列表（由父组件 invalidate query）。
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ImportResult } from "../../api/client";
+import { track } from "../../lib/track";
 
 interface Props {
+  projectId: number;
   importing: boolean;
   result?: ImportResult;
   error?: Error | null;
@@ -15,11 +17,18 @@ interface Props {
   onClose: () => void;
 }
 
-export function ImportDialog({ importing, result, error, onImport, onClose }: Props) {
+export function ImportDialog({ projectId, importing, result, error, onImport, onClose }: Props) {
   const [dragover, setDragover] = useState(false);
   const [localFiles, setLocalFiles] = useState<File[]>([]);
   const [includeAfterUpload, setIncludeAfterUpload] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
+  const trackedResultRef = useRef<ImportResult | undefined>(undefined);
+
+  useEffect(() => {
+    if (!result || trackedResultRef.current === result) return;
+    trackedResultRef.current = result;
+    track("papers_imported", { count: result.imported }, projectId);
+  }, [projectId, result]);
 
   const handleFiles = (files: FileList | null) => {
     if (!files) return;
@@ -107,9 +116,15 @@ export function ImportDialog({ importing, result, error, onImport, onClose }: Pr
         {/* 导入结果 */}
         {hasDone && result && (
           <div className="import-result">
-            <div className="ok" style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
-              ✓ 导入完成
-            </div>
+            {result.failed.length > 0 ? (
+              <div className="warn" style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                ⚠ 部分导入完成（{result.failed.length} 篇失败）
+              </div>
+            ) : (
+              <div className="ok" style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                ✓ 导入完成
+              </div>
+            )}
             <div>新导入：<strong>{result.imported}</strong> 篇</div>
             {result.skipped > 0 && <div className="warn">重复跳过：{result.skipped} 篇</div>}
             {result.failed.length > 0 && (

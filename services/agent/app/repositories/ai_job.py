@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import datetime as dt
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import AiJob
@@ -81,8 +80,12 @@ async def update_job(
         events = list(job.events_json or [])
         events.append(append_event)
         job.events_json = events
-    if complete:
-        job.completed_at = dt.datetime.utcnow()
+    # 终态统一落 completed_at（成功走 complete=True；failed/cancelled 也是终态，
+    # 不落会让失败样本在按完成时间统计时长/成功率时被静默丢失——codex 复核 P2）。
+    # 与 created_at 的 server_default=func.now() 同源取 DB 时钟：此前 Python utcnow 与
+    # DB 本地时区(+8)分裂，生产 6 条 review job 时长全为 -8h（0.6.2 S7）。
+    if (complete or status in ("failed", "cancelled")) and job.completed_at is None:
+        job.completed_at = func.now()
     await s.commit()
     await s.refresh(job)
     return job

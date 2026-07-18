@@ -61,6 +61,39 @@ class TestExtractMetadataFromMarkdown:
         meta = _extract_metadata_from_markdown(md)
         assert "abstract" not in meta
 
+    def test_logo_image_line_after_title_not_author(self):
+        """F-04: 标题后的期刊 logo 图片行不得被抽为作者，真实作者行仍正常解析。"""
+        md = (
+            "# Effect of Corporate Governance on Firm Value\n\n"
+            "![](images/366a1234567890abcdef.jpg)\n\n"
+            "Shuangyan Li, Guangrui Wang and Yongli Luo\n\n"
+            "## Abstract\n\nText."
+        )
+        meta = _extract_metadata_from_markdown(md)
+        names = [c["literal"] for c in meta["creators"]]
+        assert "Shuangyan Li" in names
+        assert all("![" not in n and "images/" not in n for n in names)
+
+    def test_logo_image_only_leaves_creators_empty(self):
+        """F-04: 标题后只有 logo 图片行 → creators 为空（留待 backfill），绝不存图片标签。"""
+        md = (
+            "# Effect of Corporate Governance on Firm Value\n\n"
+            "![](images/366a1234567890abcdef.jpg)\n\n"
+            "## Abstract\n\nText."
+        )
+        meta = _extract_metadata_from_markdown(md)
+        assert meta.get("creators", []) == []
+
+    def test_bare_image_path_line_not_author(self):
+        """F-04: 裸图片路径行（无 ![]() 包裹）同样不得被抽为作者。"""
+        md = (
+            "# Effect of Corporate Governance on Firm Value\n\n"
+            "images/366a1234567890abcdef.jpg\n\n"
+            "## Abstract\n\nText."
+        )
+        meta = _extract_metadata_from_markdown(md)
+        assert meta.get("creators", []) == []
+
 
 class TestExtractMetadataFromFilename:
     def test_full_format_author_year_title(self):

@@ -574,3 +574,28 @@ class CreditLedger(Base):
         Index("uq_credit_ledger_idempotent", "user_id", "reason", "ref",
               unique=True, postgresql_where=text("ref IS NOT NULL")),
     )
+
+
+# ---------------------------------------------------------------------------
+# 遥测层（0.6.1 P0：漏斗观测埋点）
+# ---------------------------------------------------------------------------
+
+class AnalyticsEvent(Base):
+    """产品埋点事件（只增不改的观测日志）。
+
+    0.6.1 P0：把"综述可达性是否是瓶颈"从猜测变成可查数据。记录 review 漏斗关键点
+    （面板曝光 / precheck 阻断原因 / 生成点击 / job 成功失败）。best-effort，不入
+    主业务事务，写失败不影响主流程。分析经直连 SQL 按 event/created_at 聚合。
+    """
+    __tablename__ = "analytics_event"
+
+    id: Mapped[int] = _pk()
+    # 删用户/项目不应删审计事件的历史计数；user 置空、project 级联删（项目没了埋点无意义）。
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("app_user.id", ondelete="SET NULL"), nullable=True, index=True)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), nullable=True, index=True)
+    event: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    props: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        server_default=func.now(), index=True)

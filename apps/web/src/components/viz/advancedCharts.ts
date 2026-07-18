@@ -15,17 +15,21 @@
 import type { EChartsOption } from "echarts";
 
 // ---- 类型 (镜像契约 data 形状) ----
-export type AuthorProductionCell = { author: string; year: number; articles: number };
+export type AuthorProductionCell = {
+  author?: string | null;
+  year?: number | null;
+  articles?: number | null;
+};
 export type AuthorProductionData = {
-  authors: string[];
-  years: number[];
+  authors: (string | null)[];
+  years: (number | null)[];
   cells: AuthorProductionCell[];
 };
 
-export type KeywordTrendCell = { year: number; term: string; freq: number };
+export type KeywordTrendCell = { year?: number | null; term?: string | null; freq?: number | null };
 export type KeywordTrendData = {
-  years: number[];
-  terms: string[];
+  years: (number | null)[];
+  terms: (string | null)[];
   cells: KeywordTrendCell[];
 };
 export type KeywordTrendInsufficientData = {
@@ -35,19 +39,29 @@ export type KeywordTrendInsufficientData = {
 };
 
 // A5 类型 (镜像契约 data 形状)
-export type ThematicCluster = { label: string; centrality: number; density: number; freq: number };
+export type ThematicCluster = {
+  label?: string | null;
+  centrality?: number | null;
+  density?: number | null;
+  freq?: number | null;
+};
 export type ThematicData = { clusters: ThematicCluster[] };
 
-export type EvolutionNode = { name: string; period: string; id: number };
-export type EvolutionLink = { source: number; target: number; value: number };
+export type EvolutionNode = { name?: string | null; period?: string | null; id?: number | null };
+export type EvolutionLink = { source?: number | null; target?: number | null; value?: number | null };
 export type EvolutionData = { nodes: EvolutionNode[]; links: EvolutionLink[] };
 
-export type HistciteNode = { id: string; year?: number | null; label: string; localCites: number };
-export type HistciteEdge = { from: string; to: string };
+export type HistciteNode = {
+  id?: string | null;
+  year?: number | null;
+  label?: string | null;
+  localCites?: number | null;
+};
+export type HistciteEdge = { from?: string | null; to?: string | null };
 export type HistciteData = { nodes: HistciteNode[]; edges: HistciteEdge[] };
 
-export type ThreeFieldNode = { name: string; layer: number };
-export type ThreeFieldLink = { source: string; target: string; value: number };
+export type ThreeFieldNode = { name?: string | null; layer?: number | null };
+export type ThreeFieldLink = { source?: string | null; target?: string | null; value?: number | null };
 export type ThreeFieldData = { nodes: ThreeFieldNode[]; links: ThreeFieldLink[] };
 
 /** 宣纸色梯度: 墨 → 金 → 朱砂 (visualMap inRange.color) */
@@ -59,16 +73,19 @@ export const PAPER_HEAT_COLORS = ["#efe9dc", "#4a443b", "#b08423", "#c0432b"];
  * 每个 cell = [yearIndex, authorIndex, articles]。visualMap 用宣纸色梯度。
  */
 export function buildAuthorHeatmapOption(d: AuthorProductionData): EChartsOption {
-  const years = d.years.map((y) => String(y));
-  const authors = d.authors;
-  const yearIdx = new Map(d.years.map((y, i) => [y, i]));
+  const rawYears = d.years.filter((year): year is number => typeof year === "number");
+  const years = rawYears.map((y) => String(y));
+  const authors = d.authors.map((author) => author?.trim() || "未标注");
+  const yearIdx = new Map(rawYears.map((y, i) => [y, i]));
   const authorIdx = new Map(authors.map((a, i) => [a, i]));
 
   const data: [number, number, number][] = [];
   let maxV = 1;
   for (const c of d.cells) {
+    if (typeof c.year !== "number" || typeof c.articles !== "number") continue;
+    const author = c.author?.trim() || "未标注";
     const xi = yearIdx.get(c.year);
-    const yi = authorIdx.get(c.author);
+    const yi = authorIdx.get(author);
     if (xi === undefined || yi === undefined) continue;
     data.push([xi, yi, c.articles]);
     if (c.articles > maxV) maxV = c.articles;
@@ -122,7 +139,7 @@ const RIVER_PALETTE = [
 
 /** 关键词演变图的可渲染性检查；返回值直接映射到 InsufficientData。 */
 export function getKeywordTrendInsufficientData(d: KeywordTrendData): KeywordTrendInsufficientData | null {
-  if (d.years.length > 0) return null;
+  if (d.years.some((year) => typeof year === "number")) return null;
   return {
     reason: "computed_empty",
     message: "关键词历时演变缺少年份数据，无法计算时间轴。",
@@ -139,12 +156,14 @@ export function buildKeywordRiverOption(d: KeywordTrendData): EChartsOption {
   if (getKeywordTrendInsufficientData(d)) {
     return { series: [] };
   }
-  const data: [string, number, string][] = d.cells.map((c) => [
-    String(c.year),
-    c.freq,
-    c.term,
-  ]);
-  const color = d.terms.map((_, i) => RIVER_PALETTE[i % RIVER_PALETTE.length]);
+  const years = d.years.filter((year): year is number => typeof year === "number");
+  const terms = d.terms.map((term) => term?.trim() || "未标注");
+  const data: [string, number, string][] = d.cells
+    .filter((cell): cell is { year: number; term?: string | null; freq: number } =>
+      typeof cell.year === "number" && typeof cell.freq === "number",
+    )
+    .map((cell) => [String(cell.year), cell.freq, cell.term?.trim() || "未标注"]);
+  const color = terms.map((_, i) => RIVER_PALETTE[i % RIVER_PALETTE.length]);
 
   return {
     color,
@@ -152,15 +171,15 @@ export function buildKeywordRiverOption(d: KeywordTrendData): EChartsOption {
       trigger: "axis",
       axisPointer: { type: "line", lineStyle: { color: "rgba(0,0,0,0.2)", width: 1 } },
     },
-    legend: { data: d.terms, top: 0, type: "scroll" },
+    legend: { data: terms, top: 0, type: "scroll" },
     singleAxis: {
       top: 56,
       bottom: 24,
       axisTick: {},
       axisLabel: {},
       type: "time",
-      min: `${Math.min(...d.years)}-01-01`,
-      max: `${Math.max(...d.years)}-12-31`,
+      min: `${Math.min(...years)}-01-01`,
+      max: `${Math.max(...years)}-12-31`,
       axisPointer: { animation: true, label: { show: true } },
     },
     series: [
@@ -191,7 +210,12 @@ function bubbleSize(freq: number, min: number, max: number): number {
  *   右上 驱动主题 / 右下 基础主题 / 左上 小众主题 / 左下 新兴或衰退主题。
  */
 export function buildThematicScatterOption(d: ThematicData): EChartsOption {
-  const cl = d.clusters;
+  const cl = d.clusters.map((cluster) => ({
+    label: cluster.label?.trim() || "未标注",
+    centrality: cluster.centrality ?? 0,
+    density: cluster.density ?? 0,
+    freq: cluster.freq ?? 0,
+  }));
   const xs = cl.map((c) => c.centrality);
   const ys = cl.map((c) => c.density);
   // 参考线取中位数 (Callon 习惯); 单点时退化为该点值
@@ -278,28 +302,36 @@ const SANKEY_PALETTE = [
  * label 显主题词; links 用节点唯一键连。ECharts sankey 自动按层布局 (period 决定深度)。
  */
 export function buildEvolutionSankeyOption(d: EvolutionData): EChartsOption {
+  const validNodes = d.nodes.filter(
+    (node): node is { name?: string | null; period?: string | null; id: number } =>
+      typeof node.id === "number",
+  );
   // id → 节点 (links 用 id 引用)
-  const byId = new Map(d.nodes.map((n) => [n.id, n]));
+  const byId = new Map(validNodes.map((n) => [n.id, n]));
   // 唯一 key: period + name + id (防同周期同名主题碰撞)
-  const keyOf = (n: EvolutionNode) => `${n.period}｜${n.name}｜${n.id}`;
-  const periods = Array.from(new Set(d.nodes.map((n) => n.period))).sort();
+  const keyOf = (n: { name?: string | null; period?: string | null; id: number }) =>
+    `${n.period?.trim() || "未标注"}｜${n.name?.trim() || "未标注"}｜${n.id}`;
+  const periods = Array.from(new Set(validNodes.map((n) => n.period?.trim() || "未标注"))).sort();
   const periodColor = new Map(periods.map((p, i) => [p, SANKEY_PALETTE[i % SANKEY_PALETTE.length]]));
 
-  const nodes = d.nodes.map((n) => ({
+  const nodes = validNodes.map((n) => ({
     name: keyOf(n),
     // sankey label 显主题词 (不显内部 key)
-    label: { formatter: () => n.name },
-    itemStyle: { color: periodColor.get(n.period) },
+    label: { formatter: () => n.name?.trim() || "未标注" },
+    itemStyle: { color: periodColor.get(n.period?.trim() || "未标注") },
   }));
   // 防御：节点 name 集合，过滤悬空边（ECharts sankey 对引用不存在节点的边会抛异常）。
   // 这里 link 已先经 byId 解析丢弃无效 id，再用 name Set 二次确认 source/target 落在节点上。
   const nodeNames = new Set(nodes.map((n) => n.name));
   const links = d.links
     .map((l) => {
+      if (typeof l.source !== "number" || typeof l.target !== "number") return null;
       const s = byId.get(l.source);
       const t = byId.get(l.target);
       if (!s || !t) return null;
-      return { source: keyOf(s), target: keyOf(t), value: l.value };
+      return typeof l.value === "number"
+        ? { source: keyOf(s), target: keyOf(t), value: l.value }
+        : null;
     })
     .filter((x): x is { source: string; target: string; value: number } =>
       x !== null &&
@@ -348,7 +380,12 @@ export function buildEvolutionSankeyOption(d: EvolutionData): EChartsOption {
  * 用固定坐标布局 (layout='none' + 计算 x/y), 保证年份时序可读。
  */
 export function buildHistciteGraphOption(d: HistciteData): EChartsOption {
-  const nodes = d.nodes;
+  const nodes = d.nodes.map((node, index) => ({
+    id: node.id?.trim() || `unknown-${index}`,
+    year: node.year,
+    label: node.label?.trim() || "未标注",
+    localCites: node.localCites ?? 0,
+  }));
   // 年份分组 → 计算每个节点的 (x,y); 无年份的归入最大年份+1 "未知"层
   const yrs = nodes.map((n) => (n.year == null ? Number.NaN : n.year));
   const validYrs = yrs.filter((y) => !Number.isNaN(y));
@@ -379,7 +416,14 @@ export function buildHistciteGraphOption(d: HistciteData): EChartsOption {
     };
   });
 
-  const gedges = d.edges.map((e) => ({ source: e.from, target: e.to }));
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const gedges = d.edges
+    .filter(
+      (edge): edge is { from: string; to: string } =>
+        typeof edge.from === "string" && typeof edge.to === "string" &&
+        nodeIds.has(edge.from) && nodeIds.has(edge.to),
+    )
+    .map((edge) => ({ source: edge.from, target: edge.to }));
 
   return {
     tooltip: {
@@ -423,17 +467,24 @@ function tfStripPrefix(name: string): string {
  * links 用节点全局 name (已含前缀消歧) 连。
  */
 export function buildThreeFieldSankeyOption(d: ThreeFieldData): EChartsOption {
-  const nodes = d.nodes.map((n) => ({
+  const normalizedNodes = d.nodes.map((node, index) => ({
+    name: node.name?.trim() || `未标注-${index + 1}`,
+    layer: node.layer ?? -1,
+  }));
+  const nodes = normalizedNodes.map((n) => ({
     name: n.name,
     label: { formatter: () => tfStripPrefix(n.name) },
     itemStyle: { color: TF_LAYER_COLOR[n.layer] ?? "#7a6f5d" },
   }));
   // 防御：ECharts sankey 对引用了不存在节点的悬空边会抛异常（真实语料常缺字段）。
   // 用节点 name 建 Set，过滤掉 source/target 不在其中的 link。
-  const nodeNames = new Set(d.nodes.map((n) => n.name));
+  const nodeNames = new Set(normalizedNodes.map((n) => n.name));
   const links = d.links
     .filter(
-      (l) =>
+      (l): l is { source: string; target: string; value: number } =>
+        typeof l.source === "string" &&
+        typeof l.target === "string" &&
+        typeof l.value === "number" &&
         nodeNames.has(l.source) &&
         nodeNames.has(l.target) &&
         l.source !== l.target && // 自环：sankey 不支持，会抛错

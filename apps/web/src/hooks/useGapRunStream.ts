@@ -1,7 +1,7 @@
 /**
  * useGapRunStream — 消费 gap discover/verify 进度 SSE（P1 可观测）。
  *
- * 长精读/核验阶段不再是黑箱：实时冒「精读 N/M」+ subagent(gap-finder/value-evidence) 活动 +
+ * 长精读/核验阶段不再是黑箱：实时冒「精读 N/M」+ subagent 活动 +
  * 终态。与 useScratchpad 轮询并存——SSE 显示进度/思考，轮询显示 gap 逐条落库。
  * runId 变化即重连；lastEventId 断点续传（刷新/重连不丢已发进度）。
  */
@@ -66,6 +66,7 @@ export function useGapRunStream(
             next.phase = "discovering";
             break;
           case "verifying":
+          case "scouting":
             next.phase = "verifying";
             break;
           case "subagent_event":

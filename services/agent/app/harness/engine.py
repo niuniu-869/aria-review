@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -25,6 +26,27 @@ from .llm import LLMRouter, OverrideLLMConfig, call_llm_with_fallback, _sanitize
 from .tools import BaseTool, ToolRegistry, ToolResult
 
 logger = logging.getLogger("agent_engine.engine")
+
+
+def _sanitize_final_output(text: str, *, from_reasoning: bool) -> str:
+    """保守清理 reasoning 回退中夹带的内部自述。"""
+    if not from_reasoning:
+        return text
+
+    separator = re.search(r"\r?\n[ \t]*---[ \t]*\r?\n", text)
+    if separator is None:
+        return text
+
+    prefix = text[:separator.start()]
+    inner_monologue = re.search(
+        r"(?:^|[\n。！？!?；;])\s*(?:我需要|我先|让我|首先[，,]?\s*我|(?:不过[，,]?\s*)?用户要求)",
+        prefix,
+    )
+    if inner_monologue is None:
+        return text
+
+    # 生产 run 20 曾把 reasoning 中分隔线前的内部计划直接写入 final_output。
+    return text[separator.end():].lstrip()
 
 
 # ======================================================================
@@ -951,8 +973,11 @@ async def step_once(
     if not tool_calls:
         state.messages.append(message)
         content = thinking
+        from_reasoning = False
         if not content.strip():
             content = message.get("reasoning_content") or ""
+            from_reasoning = True
+        content = _sanitize_final_output(content, from_reasoning=from_reasoning)
         state.rounds_log.append({
             "round": state.round_idx + 1,
             "thinking": content[:500],
@@ -1100,7 +1125,7 @@ async def step_once(
     if is_final_round:
         state.status = "done"
         if thinking.strip():
-            state.final_output = thinking
+            state.final_output = _sanitize_final_output(thinking, from_reasoning=False)
 
     return state
 

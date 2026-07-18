@@ -3,9 +3,12 @@
 // P2-4: 接入 onSearchResults → 渲染候选卡 SearchCandidateCards。
 // P0 三入口隔离：顶部入口选择器（检索建库/综述撰写/研究空白），随 createRun 传 entry，
 //   后端据此收窄 tool_ids + 隔离对话历史。路由 = 用户点按钮，无 AI 分诊。
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Link } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAgentRunStream } from "../hooks/useAgentRunStream";
 import { RunTimeline } from "./RunTimeline";
+import { RunHistory } from "./RunHistory";
 import { ConfirmCard } from "./ConfirmCard";
 import { SearchCandidateCards } from "./SearchCandidateCards";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -13,6 +16,9 @@ import { ErrMsg } from "../lib/ui";
 import { useLlmSettings } from "../api/useLlmSettings";
 import { useSciverseSettings } from "../api/useSciverseSettings";
 import type { AgentEntry } from "../api/client";
+import type { RunStatus } from "../api/runStatus";
+import type { ProjectReadiness } from "../hooks/useProjectReadiness";
+import { track } from "../lib/track";
 
 interface Props {
   projectId: number;
@@ -20,18 +26,31 @@ interface Props {
    * M4 (codex P2): run 完成时回调真实 runId + finalOutput + eventSeq,
    * 供上层(ChatWorkbench)据此创建工件。替代不可靠的 DOM MutationObserver 监听。
    */
-  onRunComplete?: (info: { runId: string; finalOutput: string; eventSeq: number }) => void;
+  onRunComplete?: (info: {
+    runId: string;
+    finalOutput: string;
+    eventSeq: number;
+    entry: AgentEntry;
+    status: RunStatus;
+  }) => void;
   /**
    * I-2: run 开始时（handleSubmit 启动）通知父级，父级可据此隐藏空状态引导。
    * 出错/取消后不重置，避免引导闪回。
    */
-  onRunStart?: () => void;
+  onRunStart?: (info: { entry: AgentEntry }) => void;
   /**
    * W4 (Task 7-8): 填入预设/建议追问文本（受控注入，不自动发送）。
    * I-1 修复：使用 {text, seq} 对象；seq 每次点击都递增，确保同一文本二次点击
    * 也能触发 useEffect（引用每次变化）。
    */
   fillPrompt?: { text: string; seq: number } | null;
+  /** 项目就绪度未加载时为 undefined，此时不显示提示也不拦截。 */
+  readiness?: ProjectReadiness;
+  /**
+   * F-07: 最近已完成（done）的 runId（至多 3 条，新→旧）。
+   * 在 RunTimeline 上方渲染只读「历史运行」折叠区；缺省/空数组则不渲染。
+   */
+  historyRunIds?: number[];
 }
 
 // P0 三入口元数据：标签 + 副文案 + 输入占位 + 建议追问（每入口独立，路由 = 用户点按钮）。
@@ -73,7 +92,8 @@ const ENTRY_META: Record<
 
 const ENTRY_ORDER: AgentEntry[] = ["search", "review", "gap"];
 
-export function AgentChat({ projectId, onRunComplete, onRunStart, fillPrompt }: Props) {
+export function AgentChat({ projectId, onRunComplete, onRunStart, fillPrompt, readiness, historyRunIds }: Props) {
+  const queryClient = useQueryClient();
   const { settings: llm } = useLlmSettings();
   const { settings: sciverse } = useSciverseSettings();
   const llmOptions = useMemo(() => ({
@@ -88,6 +108,13 @@ export function AgentChat({ projectId, onRunComplete, onRunStart, fillPrompt }: 
   // P0 三入口：默认「检索建库」（语料生产线起点）；用户可点按钮切换。运行中禁止切换。
   const [entry, setEntry] = useState<AgentEntry>("search");
   const entryMeta = ENTRY_META[entry];
+  const readinessBlocked = entry !== "search" && (
+    readiness?.stage === "no_papers"
+    || readiness?.stage === "no_included"
+    || (entry === "review" && (readiness?.stage === "no_fulltext" || readiness?.stage === "not_parsed"))
+  );
+  const showReadiness = entry !== "search" && readiness != null && readiness.stage !== "ready";
+  const trackedGateRef = useRef<string | null>(null);
   const {
     prompt,
     setPrompt,
@@ -106,7 +133,14 @@ export function AgentChat({ projectId, onRunComplete, onRunStart, fillPrompt }: 
     decide,
     stop,
     handleKeyDown,
-  } = useAgentRunStream({ projectId, llmOptions, sciverseOptions, entry, onRunComplete, onRunStart });
+  } = useAgentRunStream({
+    projectId,
+    llmOptions,
+    sciverseOptions,
+    entry,
+    onRunStart: () => onRunStart?.({ entry }),
+    onRunComplete: (info) => onRunComplete?.({ ...info, entry }),
+  });
 
   // W4: 外部注入 fillPrompt（预设/能力卡/建议追问点击），写入输入框（可编辑，不自动发送）
   // I-1 修复：依赖整个对象（引用每次都变），text 相同但 seq 递增时仍会重跑
@@ -115,6 +149,35 @@ export function AgentChat({ projectId, onRunComplete, onRunStart, fillPrompt }: 
       setPrompt(fillPrompt.text);
     }
   }, [fillPrompt]);
+
+  useEffect(() => {
+    if (!readinessBlocked || !readiness) {
+      trackedGateRef.current = null;
+      return;
+    }
+    const key = `${entry}:${readiness.stage}`;
+    if (trackedGateRef.current === key) return;
+    trackedGateRef.current = key;
+    track("chat_gate_blocked", { entry, stage: readiness.stage }, projectId);
+  }, [entry, projectId, readiness, readinessBlocked]);
+
+  const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (readinessBlocked && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      return;
+    }
+    handleKeyDown(event);
+  };
+
+  const gateMessage = readiness?.stage === "no_papers"
+    ? "GAP 与综述需要先建立项目文献库，发送按钮已暂时禁用。"
+    : readiness?.stage === "no_included"
+      ? "项目已有题录，但还没有纳入文献。先完成筛选纳入后再发送。"
+      : readiness?.stage === "not_parsed"
+        ? "请先在文献库完成 OCR 解析（或 AI 解析），再生成综述。"
+        : readinessBlocked
+          ? "综述依赖已纳入且可读的全文。先补充并解析全文后再发送。"
+          : "当前已纳入文献暂无可读全文。仍可继续讨论研究空白，系统会通过检索补充旁证。";
 
   // P2-3 → Phase 2: RunLog 下载已迁入 TrustCard（可信凭证卡含下载入口），此处不再重复。
 
@@ -133,7 +196,11 @@ export function AgentChat({ projectId, onRunComplete, onRunStart, fillPrompt }: 
               aria-selected={active}
               className={`agent-entry-tab${active ? " agent-entry-tab-active" : ""}`}
               disabled={running}
-              onClick={() => setEntry(e)}
+              onClick={() => {
+                setEntry(e);
+                // F-21: 切入口时失效项目查询，readiness（如「项目还没有文献」）按最新数据重推导
+                void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+              }}
               title={meta.hint}
             >
               <span className="agent-entry-tab-label">{meta.label}</span>
@@ -143,6 +210,20 @@ export function AgentChat({ projectId, onRunComplete, onRunStart, fillPrompt }: 
       </div>
       <p className="agent-entry-hint muted">{entryMeta.hint}</p>
 
+      {showReadiness && readiness && (
+        <div className="research-readiness agent-readiness" role={readinessBlocked ? "alert" : "status"}>
+          <div className="research-readiness-head">
+            <h3 className="research-readiness-title">{readiness.label}</h3>
+            <p className="research-readiness-msg">{gateMessage}</p>
+          </div>
+          <div className="research-readiness-actions">
+            <Link className="btn btn-primary" to={readiness.actionHref}>
+              {readiness.actionText}
+            </Link>
+          </div>
+        </div>
+      )}
+
       <div className="agent-input-row">
         <textarea
           className="input"
@@ -150,14 +231,17 @@ export function AgentChat({ projectId, onRunComplete, onRunStart, fillPrompt }: 
           value={prompt}
           disabled={running}
           onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={handleKeyDown}
+          onKeyDown={handleComposerKeyDown}
           rows={3}
           aria-label="Agent 指令输入"
         />
         <button
           className="btn btn-primary"
-          disabled={running || !prompt.trim()}
-          onClick={() => void submit()}
+          disabled={running || !prompt.trim() || readinessBlocked}
+          onClick={() => {
+            if (!readinessBlocked) void submit();
+          }}
+          title={readinessBlocked ? "请先按上方提示完善项目语料" : undefined}
         >
           {running ? (
             <>
@@ -194,6 +278,11 @@ export function AgentChat({ projectId, onRunComplete, onRunStart, fillPrompt }: 
       </div>
 
       {submitError && <ErrMsg error={submitError} />}
+
+      {/* F-07: 历史运行只读折叠区（最近 done run 的指令+产出），位于实时 RunTimeline 之上 */}
+      {historyRunIds && historyRunIds.length > 0 && (
+        <RunHistory projectId={projectId} runIds={historyRunIds} />
+      )}
 
       <ErrorBoundary key={runCount}>
         <RunTimeline events={events} />

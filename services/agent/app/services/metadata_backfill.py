@@ -1,7 +1,7 @@
 """元数据补全服务：用 LLM 从已 OCR 的 Markdown 全文首部回填缺失题录字段。
 
 设计原则：
-- 仅回填当前为空的字段（abstract/creators/year/keywords），不覆盖已有内容。
+- 仅回填当前为空的字段（abstract/creators/year/keywords/container_title），不覆盖已有内容。
 - 逐篇 try/except + rollback 隔离（Phase2 教训：DB 错误后 rollback 防级联）。
 - LLM 返回非 JSON 或解析失败 → 记为 failed，不抛出异常。
 - 无 markdown_path / OCR 未完成 → 记为 skipped。
@@ -196,6 +196,13 @@ async def backfill_paper_metadata(
                     paper.year = year_int
                     updated_any = True
 
+        # container_title: 空才填（LLM 输出键为 journal）
+        if not paper.container_title:
+            new_journal = parsed.get("journal")
+            if new_journal and isinstance(new_journal, str) and new_journal.strip():
+                paper.container_title = new_journal.strip()
+                updated_any = True
+
         # keywords: 空才填
         if not paper.keywords:
             new_kws = parsed.get("keywords")
@@ -209,12 +216,13 @@ async def backfill_paper_metadata(
             s.add(paper)
             await s.commit()
             await s.refresh(paper)
-            logger.info("paper %d: 元数据已回填（abstract=%s creators=%s year=%s kws=%s）",
+            logger.info("paper %d: 元数据已回填（abstract=%s creators=%s year=%s kws=%s journal=%s）",
                         paper.id,
                         bool(paper.abstract),
                         bool(paper.creators),
                         paper.year,
-                        bool(paper.keywords))
+                        bool(paper.keywords),
+                        bool(paper.container_title))
             return {"status": "updated", "reason": None}
         else:
             return {"status": "skipped", "reason": "LLM 未返回可回填的新字段"}

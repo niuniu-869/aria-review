@@ -27,9 +27,21 @@ export function NetworkGraph({
 
   useEffect(() => {
     if (!ref.current || graph.nodes.length === 0) return;
+    const nodes = graph.nodes.filter(
+      (node): node is { id: string; label: string; value: number } =>
+        typeof node.id === "string" && node.id.length > 0 &&
+        typeof node.label === "string" && typeof node.value === "number",
+    );
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const edges = graph.edges.filter(
+      (edge): edge is { source: string; target: string; weight: number } =>
+        typeof edge.source === "string" && typeof edge.target === "string" &&
+        typeof edge.weight === "number" && nodeIds.has(edge.source) && nodeIds.has(edge.target),
+    );
+    if (nodes.length === 0) return;
     const data = {
-      nodes: graph.nodes.map((n) => ({ id: n.id, label: n.label, value: n.value })),
-      edges: graph.edges.map((e) => ({ from: e.source, to: e.target, value: e.weight })),
+      nodes: nodes.map((n) => ({ id: n.id, label: n.label, value: n.value })),
+      edges: edges.map((e) => ({ from: e.source, to: e.target, value: e.weight })),
     };
     const net = new Network(ref.current, data, {
       nodes: {

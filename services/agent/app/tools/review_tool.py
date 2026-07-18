@@ -38,6 +38,23 @@ logger = logging.getLogger("agent.tools.review")
 # 大语料(89 篇)整体超时。这两个值为常量、不从 LLM 参数读取，防隐藏参数绕过上限。
 _MAX_REVIEW_PAPERS = 12  # 超过则精读前 N 篇并在结果中如实标注覆盖范围
 _MAP_CONCURRENCY = 6
+# topic 低于此长度视为缺失/占位（如 "x"、"无"），从语料标题派生（F-11）
+_MIN_TOPIC_CHARS = 4
+
+
+def _derive_topic_from_corpus(paper_markdowns: list[dict]) -> str:
+    """从语料论文标题派生综述主题（F-11：topic 缺失/过短时的语料内派生）。
+
+    取前 3 篇论文标题拼接——主题必须来自语料内容本身，绝不回退项目名
+    （项目名仅为标识，可能与研究无关甚至含注入内容）。
+    """
+    titles: list[str] = []
+    for pm in paper_markdowns[:3]:
+        meta = pm.get("meta") or {}
+        title = str(meta.get("title") or pm.get("title") or "").strip()
+        if title:
+            titles.append(title)
+    return "；".join(titles)
 
 
 class ReviewTool(BaseTool):
@@ -67,7 +84,10 @@ class ReviewTool(BaseTool):
             "properties": {
                 "topic": {
                     "type": "string",
-                    "description": "综述研究主题（缺省时回退用项目名/研究问题）",
+                    "description": (
+                        "综述研究主题（应概括本项目语料内容；缺省或过短时自动从已纳入"
+                        "文献标题派生，绝不使用项目名）"
+                    ),
                 },
                 "paper_type": {
                     "type": "string",
@@ -118,8 +138,6 @@ class ReviewTool(BaseTool):
             return self._fail(action, "缺少 session_factory（无法访问数据库）")
 
         topic = (params.get("topic") or "").strip()
-        if not topic:
-            return self._fail(action, "缺少 topic（综述主题）")
         # 常量硬约束，不从 params 读取（schema 已不暴露）：防隐藏参数绕过时延上限 (codex P1)
         concurrency = _MAP_CONCURRENCY
         max_papers = _MAX_REVIEW_PAPERS
@@ -138,6 +156,16 @@ class ReviewTool(BaseTool):
             return self._fail(
                 action, f"项目 {project_id} 无可用 included 论文（语料为空）{reason}",
             )
+
+        # F-11：topic 缺失/过短（疑似占位）时从语料标题派生，绝不回退项目名
+        # （项目名仅为标识，可能与研究主题无关甚至含注入内容）。零语料已在上面失败。
+        if len(topic) < _MIN_TOPIC_CHARS:
+            derived = _derive_topic_from_corpus(paper_markdowns)
+            if derived:
+                logger.info("[ReviewTool] topic 缺失/过短，已从语料标题派生: %r", derived)
+                topic = derived
+        if not topic:
+            return self._fail(action, "缺少 topic（综述主题）且无法从语料标题派生")
 
         if skipped:
             logger.info(
@@ -254,8 +282,11 @@ class ReviewTool(BaseTool):
         fabricated_count = validation_summary.get(
             "fabricated_citations", len(validation_summary.get("fabricated_spans", [])),
         )
+        # F-13：字数取 stats.review_chars（orchestrate 已剔除 [[anchor:]] 包裹标记，
+        # 与 validation_summary.review_chars 同源，可审计）。
+        review_chars = stats.get("review_chars", len(review_md))
         summary = (
-            f"综述 {len(review_md)} 字符，有效引用 {len(evidence_refs_dicts)} 条，"
+            f"综述正文 {review_chars} 字符，有效引用 {len(evidence_refs_dicts)} 条，"
             f"伪造引用 {fabricated_count} 条（已计入校验日志），"
             f"溯源锚点 {len(provenance_map)} 个"
             + (
@@ -270,7 +301,7 @@ class ReviewTool(BaseTool):
         return self._ok(
             action,
             data=[{
-                "review_chars": len(review_md),
+                "review_chars": review_chars,
                 "valid_citations": len(evidence_refs_dicts),
                 "fabricated_citations": fabricated_count,
                 "total_papers": stats.get("total_papers", len(paper_markdowns)),

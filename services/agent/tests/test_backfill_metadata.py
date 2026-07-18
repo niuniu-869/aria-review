@@ -228,7 +228,7 @@ async def test_backfill_updates_missing_fields(aclient, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_backfill_skips_already_complete(aclient, monkeypatch):
-    """已有 abstract 且有 creators 的篇，onlyMissing=True 时不被选中（processed=0）。"""
+    """abstract、creators、year 俱全的篇，onlyMissing=True 时不被选中（processed=0）。"""
     c, factory = aclient
     pid = await _create_project(factory, "Backfill Complete Test")
 
@@ -238,6 +238,7 @@ async def test_backfill_skips_already_complete(aclient, monkeypatch):
         markdown_content=md_content,
         abstract="This is already a filled abstract.",
         creators=[{"literal": "Some Author"}],
+        year=2020,  # F-05: year 也纳入 onlyMissing，需显式置齐才算「已完整」
     )
 
     fake_llm = FakeLLM('{"title": "x", "authors": ["New Author"], "year": 2020, "abstract": "overwrite", "keywords": []}')
@@ -512,6 +513,98 @@ async def test_backfill_rollback_isolation_first_fails_second_succeeds(aclient, 
     assert body["processed"] == 2, f"应处理 2 篇，实际 processed={body['processed']}"
     assert body["failed"] == 1, f"第一篇应 failed，实际 {body['failed']}"
     assert body["updated"] == 1, f"A-fix: rollback 后第二篇应成功 updated=1，实际 {body['updated']}"
+
+
+# ---------------------------------------------------------------------------
+# 测试 9 (F-05): 仅缺 year 的篇 → onlyMissing=True 时也被选中并回填 year/container_title
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_backfill_only_missing_covers_year(aclient, monkeypatch):
+    """F-05: abstract+creators 已有、仅缺 year → onlyMissing=True 也应被选中（此前永不入选）。
+
+    同时验证 container_title 为空时由 LLM 返回的 journal 回填。
+    """
+    c, factory = aclient
+    pid = await _create_project(factory, "Backfill Year Test")
+
+    md_content = "# Paper With Year In Text\n\nPublished 2021.\n\nContent."
+    paper_id, _ = await _mk_paper_with_markdown(
+        factory, pid,
+        markdown_content=md_content,
+        abstract="Already have an abstract.",
+        creators=[{"literal": "Existing Author"}],
+        year=None,  # 仅缺 year
+    )
+
+    canned_json = json.dumps({
+        "title": "Paper With Year In Text",
+        "authors": ["Existing Author"],
+        "year": 2021,
+        "abstract": "LLM abstract that must not overwrite",
+        "keywords": [],
+        "journal": "Journal of Testing",
+    })
+    fake_llm = FakeLLM(canned_json)
+    monkeypatch.setattr("app.main.get_llm_client", lambda *a, **k: fake_llm)
+
+    r = await c.post(f"/projects/{pid}/papers/backfill-metadata", json={"limit": 10, "onlyMissing": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["processed"] == 1, f"F-05: 仅缺 year 的篇应被选中，实际 processed={body['processed']}"
+    assert body["updated"] == 1
+    assert body["failed"] == 0
+
+    async with factory() as s:
+        paper = (await s.execute(select(Paper).where(Paper.id == paper_id))).scalar_one()
+        assert paper.year == 2021
+        # 已有字段不被覆盖
+        assert paper.abstract == "Already have an abstract."
+        assert paper.creators == [{"literal": "Existing Author"}]
+        # container_title 从 LLM journal 回填
+        assert paper.container_title == "Journal of Testing"
+
+
+# ---------------------------------------------------------------------------
+# 测试 10 (F-05): 已有 container_title → 不被 LLM journal 覆盖
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_overwrite_existing_container_title(aclient, monkeypatch):
+    """F-05: container_title 已有值时保持原样（与 year 同样的仅填空军规）。"""
+    c, factory = aclient
+    pid = await _create_project(factory, "No Overwrite Journal Test")
+
+    paper_id, _ = await _mk_paper_with_markdown(
+        factory, pid,
+        markdown_content="# P\n\nContent.",
+        abstract=None,   # 缺 abstract 以保证被 onlyMissing 选中
+        creators=[],
+    )
+    async with factory() as s:
+        paper = (await s.execute(select(Paper).where(Paper.id == paper_id))).scalar_one()
+        paper.container_title = "Original Journal"
+        await s.commit()
+
+    canned_json = json.dumps({
+        "title": "P",
+        "authors": ["A"],
+        "year": 2022,
+        "abstract": "Filled abstract.",
+        "keywords": [],
+        "journal": "LLM Journal",
+    })
+    fake_llm = FakeLLM(canned_json)
+    monkeypatch.setattr("app.main.get_llm_client", lambda *a, **k: fake_llm)
+
+    r = await c.post(f"/projects/{pid}/papers/backfill-metadata", json={"limit": 10, "onlyMissing": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["updated"] == 1
+
+    async with factory() as s:
+        paper = (await s.execute(select(Paper).where(Paper.id == paper_id))).scalar_one()
+        assert paper.container_title == "Original Journal", "已有 container_title 不应被覆盖"
+        assert paper.abstract == "Filled abstract."
 
 
 # ---------------------------------------------------------------------------

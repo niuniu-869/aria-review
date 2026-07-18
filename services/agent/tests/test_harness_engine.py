@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.harness.config import EngineConfig, set_config
 from app.harness.engine import (
+    _sanitize_final_output,
     autonomous_loop,
     trim_messages_to_fit,
     estimate_messages_tokens,
@@ -158,6 +159,64 @@ def patch_config():
     set_config(_make_config())
     yield
     set_config(None)  # 清除，下次 get_config() 会重新初始化
+
+
+# ======================================================================
+# final_output 内部思考清理
+# ======================================================================
+
+def test_sanitize_reasoning_output_strips_run20_style_monologue():
+    reasoning = (
+        "当前项目 #16 已纳入文献为 0 篇，无法基于现有语料生成任何章节。"
+        "我需要先告知用户现状，并建议先检索纳入相关文献。\n\n"
+        "不过，用户要求直接生成综述。我先确认一下项目是否有语料，因此我必须诚实反馈。\n\n"
+        "---\n\n"
+        "很抱歉，当前项目尚未纳入文献，暂时无法生成综述。"
+    )
+
+    assert _sanitize_final_output(reasoning, from_reasoning=True) == (
+        "很抱歉，当前项目尚未纳入文献，暂时无法生成综述。"
+    )
+
+
+def test_sanitize_reasoning_output_without_separator_is_unchanged():
+    reasoning = "我需要先说明当前项目没有语料，然后建议用户前往搜索入口。"
+
+    assert _sanitize_final_output(reasoning, from_reasoning=True) == reasoning
+
+
+def test_sanitize_content_output_keeps_valid_markdown_separator():
+    content = "当前结论如下：\n\n---\n\n这是补充说明。"
+
+    assert _sanitize_final_output(content, from_reasoning=False) == content
+
+
+@pytest.mark.asyncio
+async def test_loop_sanitizes_reasoning_fallback_before_final_output():
+    """content 为空时只交付 reasoning 分隔线后的用户正文。"""
+    registry = ToolRegistry()
+    router = _make_router()
+    message = {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "我先确认项目语料。\n\n---\n\n当前项目尚无语料，请先前往【搜索】入口检索建库。",
+    }
+
+    with patch(
+        "app.harness.engine.call_llm_with_fallback",
+        new=AsyncMock(return_value=_llm_response(message)),
+    ):
+        content, _, _, _ = await autonomous_loop(
+            registry=registry,
+            llm_router=router,
+            model_names=["stub-model"],
+            system_prompt="你是测试助手",
+            user_prompt="生成综述",
+            max_rounds=3,
+            publisher=NullEventPublisher(),
+        )
+
+    assert content == "当前项目尚无语料，请先前往【搜索】入口检索建库。"
 
 
 # ======================================================================

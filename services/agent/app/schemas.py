@@ -5,7 +5,7 @@ Phase 0 先手写 + 测试快照守护, 后续接 openapi-typescript / datamodel
 """
 from __future__ import annotations
 from typing import Annotated, Literal, Union
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .run_status import RunStatus
 from .search_limits import SEARCH_LIMIT_MAX
@@ -20,8 +20,8 @@ AiJobCreatableKind = Literal[
     "infographic_prompt",
     "infographic_image",
 ]
-# 已持久化/可列出的 kind 全集：research 路由（gaps:discover / gaps:verify）
-# 走专用端点创建 gap_discover / gap_verify，不经通用创建入口
+# 已持久化/可列出的 kind 全集：research 路由（gaps:discover / gaps:verify / gaps:feasibility）
+# 走专用端点创建 gap_discover / gap_verify / gap_feasibility，不经通用创建入口
 AiJobKind = Literal[
     "review",
     "chat",
@@ -32,6 +32,7 @@ AiJobKind = Literal[
     "infographic_image",
     "gap_discover",
     "gap_verify",
+    "gap_feasibility",
 ]
 AiJobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
 CorpusStatus = Literal["parsing", "ready", "failed"]
@@ -53,19 +54,19 @@ class PublicStats(BaseModel):
 
 
 class AnnualPoint(BaseModel):
-    year: int
-    articles: int = Field(ge=0)
+    year: int | None = None
+    articles: int | None = Field(default=None, ge=0)
 
 
 class OverviewStats(BaseModel):
-    documents: int = Field(ge=0)
-    sources: int = Field(ge=0)
-    authors: int = Field(ge=0)
+    documents: int | None = Field(default=None, ge=0)
+    sources: int | None = Field(default=None, ge=0)
+    authors: int | None = Field(default=None, ge=0)
     keywordsPlus: int | None = Field(default=None, ge=0)
     authorKeywords: int | None = Field(default=None, ge=0)
-    avgCitationsPerDoc: float = Field(ge=0)
-    timespanFrom: int
-    timespanTo: int
+    avgCitationsPerDoc: float | None = Field(default=None, ge=0)
+    timespanFrom: int | None = None
+    timespanTo: int | None = None
     # A4 可选增量: 语料级 H 指数 / 年均增长率(CAGR, %), 缺/边界→None
     hIndex: int | None = Field(default=None, ge=0)
     annualGrowthRate: float | None = None
@@ -96,6 +97,14 @@ class AiJobCreateRequest(BaseModel):
     action: str | None = None
     style: str | None = None
     imagePrompt: str | None = None
+
+
+class AnalyticsEventRequest(BaseModel):
+    """产品埋点上报（0.6.1 P0）。event 为漏斗事件名，props 为轻量上下文。"""
+    model_config = ConfigDict(extra="forbid")
+    event: str = Field(min_length=1, max_length=48)
+    projectId: int | None = None
+    props: dict | None = None
 
 
 class ImageSettingsPayload(BaseModel):
@@ -134,13 +143,13 @@ class AiJobItem(BaseModel):
 
 # --- 切片3 分析页 ---
 class SourceItem(BaseModel):
-    source: str
-    articles: int
+    source: str | None = None
+    articles: int | None = Field(default=None, ge=0)
 
 
 class HSourceItem(BaseModel):
-    source: str
-    h: int
+    source: str | None = None
+    h: int | None = Field(default=None, ge=0)
     # A4 可选增量: g 指数 / m 指数(缺基准年→None) / 被引总数 tc
     g: int | None = None
     m: float | None = None
@@ -148,9 +157,9 @@ class HSourceItem(BaseModel):
 
 
 class BradfordItem(BaseModel):
-    source: str
-    zone: str
-    freq: int
+    source: str | None = None
+    zone: str | None = None
+    freq: int | None = Field(default=None, ge=0)
     # A4 可选增量: 排名(行号) + 累计频次百分比(0-100)
     rank: int | None = None
     cumPct: float | None = None
@@ -166,13 +175,13 @@ class SourcesResult(BaseModel):
 
 
 class AuthorItem(BaseModel):
-    author: str
-    articles: int
+    author: str | None = None
+    articles: int | None = Field(default=None, ge=0)
 
 
 class HAuthorItem(BaseModel):
-    author: str
-    h: int
+    author: str | None = None
+    h: int | None = Field(default=None, ge=0)
     # A4 可选增量: g 指数 / m 指数(缺基准年→None) / 被引总数 tc
     g: int | None = None
     m: float | None = None
@@ -180,8 +189,8 @@ class HAuthorItem(BaseModel):
 
 
 class LotkaPoint(BaseModel):
-    articles: int
-    authors: int
+    articles: int | None = Field(default=None, ge=0)
+    authors: int | None = Field(default=None, ge=0)
 
 
 class Lotka(BaseModel):
@@ -202,12 +211,12 @@ class CitedDoc(BaseModel):
     title: str | None = None
     author: str | None = None
     year: int | None = None
-    cited: int
+    cited: int | None = Field(default=None, ge=0)
 
 
 class KeywordItem(BaseModel):
-    term: str
-    freq: int
+    term: str | None = None
+    freq: int | None = Field(default=None, ge=0)
 
 
 class DocumentsResult(BaseModel):
@@ -247,14 +256,14 @@ class AnalysisUnavailable(BaseModel):
 
 # 作者年度产出 (热力图: 作者 × 年份)
 class AuthorProductionCell(BaseModel):
-    author: str
-    year: int
-    articles: int = Field(ge=0)
+    author: str | None = None
+    year: int | None = None
+    articles: int | None = Field(default=None, ge=0)
 
 
 class AuthorProductionData(BaseModel):
-    authors: list[str]
-    years: list[int]
+    authors: list[str | None]
+    years: list[int | None]
     cells: list[AuthorProductionCell]
 
 
@@ -274,14 +283,14 @@ AuthorProductionEnvelope = Annotated[
 
 # 关键词历时演变 (themeRiver / 堆叠面积)
 class KeywordTrendCell(BaseModel):
-    year: int
-    term: str
-    freq: int = Field(ge=0)
+    year: int | None = None
+    term: str | None = None
+    freq: int | None = Field(default=None, ge=0)
 
 
 class KeywordTrendData(BaseModel):
-    years: list[int]
-    terms: list[str]
+    years: list[int | None]
+    terms: list[str | None]
     cells: list[KeywordTrendCell]
 
 
@@ -301,8 +310,8 @@ KeywordTrendEnvelope = Annotated[
 
 # 高被引参考文献 (参考文献 | 次数)
 class CitedRefItem(BaseModel):
-    ref: str
-    count: int = Field(ge=0)
+    ref: str | None = None
+    count: int | None = Field(default=None, ge=0)
 
 
 class CitedRefsOk(BaseModel):
@@ -323,10 +332,10 @@ CitedRefsEnvelope = Annotated[
 
 # 主题战略图 (Callon 中心度×密度 四象限散点)
 class ThematicCluster(BaseModel):
-    label: str
-    centrality: float
-    density: float
-    freq: int = Field(ge=0)
+    label: str | None = None
+    centrality: float | None = None
+    density: float | None = None
+    freq: int | None = Field(default=None, ge=0)
 
 
 class ThematicData(BaseModel):
@@ -349,15 +358,15 @@ ThematicEnvelope = Annotated[
 
 # 主题演进图 (多周期主题流 / Sankey)
 class EvolutionNode(BaseModel):
-    name: str
-    period: str
-    id: int
+    name: str | None = None
+    period: str | None = None
+    id: int | None = None
 
 
 class EvolutionLink(BaseModel):
-    source: int
-    target: int
-    value: float
+    source: int | None = None
+    target: int | None = None
+    value: float | None = None
 
 
 class EvolutionData(BaseModel):
@@ -381,17 +390,17 @@ EvolutionEnvelope = Annotated[
 
 # 历史引文图 (时序分层引用脉络)
 class HistciteNode(BaseModel):
-    id: str
+    id: str | None = None
     # 年份缺失 → None (前端布局兜底)
     year: int | None = None
-    label: str
-    localCites: int = Field(ge=0)
+    label: str | None = None
+    localCites: int | None = Field(default=None, ge=0)
 
 
 class HistciteEdge(BaseModel):
     # 引用方 → 被引方 (节点 id)
-    from_: str = Field(alias="from")
-    to: str
+    from_: str | None = Field(default=None, alias="from")
+    to: str | None = None
     model_config = ConfigDict(populate_by_name=True)
 
 
@@ -416,14 +425,14 @@ HistciteEnvelope = Annotated[
 
 # 三字段 Sankey (作者 → 关键词 → 来源)
 class ThreeFieldNode(BaseModel):
-    name: str
-    layer: int = Field(ge=0, le=2)  # 0=作者/1=关键词/2=来源
+    name: str | None = None
+    layer: int | None = Field(default=None, ge=0, le=2)  # 0=作者/1=关键词/2=来源
 
 
 class ThreeFieldLink(BaseModel):
-    source: str
-    target: str
-    value: int = Field(ge=0)
+    source: str | None = None
+    target: str | None = None
+    value: int | None = Field(default=None, ge=0)
 
 
 class ThreeFieldData(BaseModel):
@@ -447,15 +456,15 @@ ThreeFieldEnvelope = Annotated[
 
 # --- 切片4 网络页 ---
 class GraphNode(BaseModel):
-    id: str
-    label: str
-    value: float
+    id: str | None = None
+    label: str | None = None
+    value: float | None = Field(default=None, ge=0)
 
 
 class GraphEdge(BaseModel):
-    source: str
-    target: str
-    weight: float
+    source: str | None = None
+    target: str | None = None
+    weight: float | None = Field(default=None, ge=0)
 
 
 class Graph(BaseModel):
@@ -467,7 +476,7 @@ class NetworkResult(BaseModel):
     schemaVersion: int
     projectId: str
     corpusId: str
-    network: str
+    network: str | None = None
     graph: Graph
 
 
@@ -612,6 +621,18 @@ class ProjectCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     researchQuestion: str | None = None
     description: str | None = None
+
+
+class ProjectRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def _strip_nonempty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("项目名不能为空")
+        return v
 
 
 class ProjectRef(BaseModel):
@@ -771,6 +792,7 @@ class AgentRunRef(BaseModel):
 class RunDetail(BaseModel):
     runId: int
     status: RunStatus
+    prompt: str | None = None  # 本 run 的原始用户指令（取自 messages_snapshot 顶层 user_prompt）
     roundsLog: list = Field(default_factory=list)
     finalOutput: str | None = None
     evidenceRefs: list | None = None
@@ -1015,7 +1037,7 @@ class SciverseBackfillFulltextResult(BaseModel):
 class BackfillMetadataRequest(BaseModel):
     """POST /projects/{pid}/papers/backfill-metadata 请求体。"""
     limit: int = Field(20, ge=1, le=100, description="最多处理的文献数（保配额）")
-    onlyMissing: bool = Field(True, description="True=仅处理缺 abstract 或 creators 的篇；False=全量")
+    onlyMissing: bool = Field(True, description="True=仅处理缺 abstract、creators 或 year 的篇；False=全量")
 
 
 class BackfillMetadataResult(BaseModel):

@@ -223,6 +223,71 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrNotFound'
+    delete:
+      operationId: deleteProject
+      summary: 删除项目
+      description: 删除项目及其子表数据（DB ondelete=CASCADE 级联）；共享 Paper 题录实体不受影响。
+      tags:
+      - projects
+      parameters:
+      - name: pid
+        in: path
+        required: true
+        schema:
+          type: integer
+        description: 项目 DB id（整数）
+      responses:
+        '204':
+          description: 删除成功
+        '404':
+          description: 项目不存在（或不属于当前用户）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    patch:
+      operationId: renameProject
+      summary: 重命名项目
+      tags:
+      - projects
+      parameters:
+      - name: pid
+        in: path
+        required: true
+        schema:
+          type: integer
+        description: 项目 DB id（整数）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectRenameRequest'
+      responses:
+        '200':
+          description: 更新后的项目
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRef'
+        '404':
+          description: 项目不存在（或不属于当前用户）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: 项目名已存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '422':
+          description: 参数校验失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrValidation'
   /projects/{pid}/corpus/materialize:
     post:
       operationId: materializeCorpus
@@ -2452,16 +2517,19 @@ paths:
           type: string
           minLength: 1
           pattern: ^[A-Za-z0-9._-]+$
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GapFeasibilityRequest'
       responses:
         '202':
           description: 已受理，返回 feasibility_run_id 供轮询
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  feasibility_run_id:
-                    type: string
+                $ref: '#/components/schemas/GapFeasibilityAccepted'
         '404':
           description: GAP 不存在
           content:
@@ -2497,16 +2565,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  gap_id:
-                    type: string
-                  verdict:
-                    $ref: '#/components/schemas/FeasibilityVerdict'
-                  pack:
-                    oneOf:
-                    - $ref: '#/components/schemas/FeasibilityPack'
-                    - type: 'null'
+                $ref: '#/components/schemas/GapFeasibilityVerdictResult'
         '404':
           description: GAP 不存在
           content:
@@ -2771,6 +2830,15 @@ components:
         description:
           type: string
           nullable: true
+    ProjectRenameRequest:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
     ProjectRef:
       type: object
       required:
@@ -2998,24 +3066,20 @@ components:
             $ref: '#/components/schemas/AnnualPoint'
     OverviewStats:
       type: object
-      required:
-      - documents
-      - sources
-      - authors
-      - avgCitationsPerDoc
-      - timespanFrom
-      - timespanTo
       properties:
         documents:
           type: integer
           minimum: 0
+          nullable: true
         sources:
           type: integer
           minimum: 0
+          nullable: true
           description: 期刊或来源数
         authors:
           type: integer
           minimum: 0
+          nullable: true
         keywordsPlus:
           type: integer
           minimum: 0
@@ -3027,11 +3091,14 @@ components:
         avgCitationsPerDoc:
           type: number
           minimum: 0
+          nullable: true
         timespanFrom:
           type: integer
+          nullable: true
           description: 起始年
         timespanTo:
           type: integer
+          nullable: true
           description: 结束年
         hIndex:
           type: integer
@@ -3043,37 +3110,34 @@ components:
           description: 年均增长率 CAGR (%); 单年/边界为 null
     AnnualPoint:
       type: object
-      required:
-      - year
-      - articles
       properties:
         year:
           type: integer
+          nullable: true
         articles:
           type: integer
           minimum: 0
+          nullable: true
     SourceItem:
       type: object
-      required:
-      - source
-      - articles
       properties:
         source:
           type: string
+          nullable: true
         articles:
           type: integer
           minimum: 0
+          nullable: true
     HSourceItem:
       type: object
-      required:
-      - source
-      - h
       properties:
         source:
           type: string
+          nullable: true
         h:
           type: integer
           minimum: 0
+          nullable: true
         g:
           type: integer
           minimum: 0
@@ -3087,18 +3151,17 @@ components:
           nullable: true
     BradfordItem:
       type: object
-      required:
-      - source
-      - zone
-      - freq
       properties:
         source:
           type: string
+          nullable: true
         zone:
           type: string
+          nullable: true
         freq:
           type: integer
           minimum: 0
+          nullable: true
         rank:
           type: integer
           minimum: 1
@@ -3139,26 +3202,24 @@ components:
             $ref: '#/components/schemas/BradfordItem'
     AuthorItem:
       type: object
-      required:
-      - author
-      - articles
       properties:
         author:
           type: string
+          nullable: true
         articles:
           type: integer
           minimum: 0
+          nullable: true
     HAuthorItem:
       type: object
-      required:
-      - author
-      - h
       properties:
         author:
           type: string
+          nullable: true
         h:
           type: integer
           minimum: 0
+          nullable: true
         g:
           type: integer
           minimum: 0
@@ -3172,16 +3233,15 @@ components:
           nullable: true
     LotkaPoint:
       type: object
-      required:
-      - articles
-      - authors
       properties:
         articles:
           type: integer
           minimum: 0
+          nullable: true
         authors:
           type: integer
           minimum: 0
+          nullable: true
     Lotka:
       type: object
       properties:
@@ -3222,8 +3282,6 @@ components:
           $ref: '#/components/schemas/Lotka'
     CitedDoc:
       type: object
-      required:
-      - cited
       properties:
         title:
           type: string
@@ -3237,17 +3295,17 @@ components:
         cited:
           type: integer
           minimum: 0
+          nullable: true
     KeywordItem:
       type: object
-      required:
-      - term
-      - freq
       properties:
         term:
           type: string
+          nullable: true
         freq:
           type: integer
           minimum: 0
+          nullable: true
     DocumentsResult:
       type: object
       required:
@@ -3316,18 +3374,17 @@ components:
           nullable: true
     AuthorProductionCell:
       type: object
-      required:
-      - author
-      - year
-      - articles
       properties:
         author:
           type: string
+          nullable: true
         year:
           type: integer
+          nullable: true
         articles:
           type: integer
           minimum: 0
+          nullable: true
     AuthorProductionData:
       type: object
       required:
@@ -3339,10 +3396,12 @@ components:
           type: array
           items:
             type: string
+            nullable: true
         years:
           type: array
           items:
             type: integer
+            nullable: true
         cells:
           type: array
           items:
@@ -3374,18 +3433,17 @@ components:
       - $ref: '#/components/schemas/AnalysisUnavailable'
     KeywordTrendCell:
       type: object
-      required:
-      - year
-      - term
-      - freq
       properties:
         year:
           type: integer
+          nullable: true
         term:
           type: string
+          nullable: true
         freq:
           type: integer
           minimum: 0
+          nullable: true
     KeywordTrendData:
       type: object
       required:
@@ -3397,10 +3455,12 @@ components:
           type: array
           items:
             type: integer
+            nullable: true
         terms:
           type: array
           items:
             type: string
+            nullable: true
         cells:
           type: array
           items:
@@ -3432,15 +3492,14 @@ components:
       - $ref: '#/components/schemas/AnalysisUnavailable'
     CitedRefItem:
       type: object
-      required:
-      - ref
-      - count
       properties:
         ref:
           type: string
+          nullable: true
         count:
           type: integer
           minimum: 0
+          nullable: true
     CitedRefsOk:
       type: object
       required:
@@ -3470,21 +3529,20 @@ components:
       - $ref: '#/components/schemas/AnalysisUnavailable'
     ThematicCluster:
       type: object
-      required:
-      - label
-      - centrality
-      - density
-      - freq
       properties:
         label:
           type: string
+          nullable: true
         centrality:
           type: number
+          nullable: true
         density:
           type: number
+          nullable: true
         freq:
           type: integer
           minimum: 0
+          nullable: true
     ThematicData:
       type: object
       required:
@@ -3521,30 +3579,28 @@ components:
       - $ref: '#/components/schemas/AnalysisUnavailable'
     EvolutionNode:
       type: object
-      required:
-      - name
-      - period
-      - id
       properties:
         name:
           type: string
+          nullable: true
         period:
           type: string
+          nullable: true
         id:
           type: integer
+          nullable: true
     EvolutionLink:
       type: object
-      required:
-      - source
-      - target
-      - value
       properties:
         source:
           type: integer
+          nullable: true
         target:
           type: integer
+          nullable: true
         value:
           type: number
+          nullable: true
     EvolutionData:
       type: object
       required:
@@ -3586,31 +3642,29 @@ components:
       - $ref: '#/components/schemas/AnalysisUnavailable'
     HistciteNode:
       type: object
-      required:
-      - id
-      - label
-      - localCites
       properties:
         id:
           type: string
+          nullable: true
         year:
           type: integer
           nullable: true
         label:
           type: string
+          nullable: true
         localCites:
           type: integer
           minimum: 0
+          nullable: true
     HistciteEdge:
       type: object
-      required:
-      - from
-      - to
       properties:
         from:
           type: string
+          nullable: true
         to:
           type: string
+          nullable: true
     HistciteData:
       type: object
       required:
@@ -3652,30 +3706,28 @@ components:
       - $ref: '#/components/schemas/AnalysisUnavailable'
     ThreeFieldNode:
       type: object
-      required:
-      - name
-      - layer
       properties:
         name:
           type: string
+          nullable: true
         layer:
           type: integer
           minimum: 0
           maximum: 2
+          nullable: true
     ThreeFieldLink:
       type: object
-      required:
-      - source
-      - target
-      - value
       properties:
         source:
           type: string
+          nullable: true
         target:
           type: string
+          nullable: true
         value:
           type: integer
           minimum: 0
+          nullable: true
     ThreeFieldData:
       type: object
       required:
@@ -3717,32 +3769,30 @@ components:
       - $ref: '#/components/schemas/AnalysisUnavailable'
     GraphNode:
       type: object
-      required:
-      - id
-      - label
-      - value
       properties:
         id:
           type: string
+          nullable: true
         label:
           type: string
+          nullable: true
         value:
           type: number
           minimum: 0
+          nullable: true
     GraphEdge:
       type: object
-      required:
-      - source
-      - target
-      - weight
       properties:
         source:
           type: string
+          nullable: true
         target:
           type: string
+          nullable: true
         weight:
           type: number
           minimum: 0
+          nullable: true
     Graph:
       type: object
       required:
@@ -3763,7 +3813,6 @@ components:
       - schemaVersion
       - projectId
       - corpusId
-      - network
       - graph
       properties:
         schemaVersion:
@@ -3776,6 +3825,7 @@ components:
           format: uuid
         network:
           type: string
+          nullable: true
           description: 网络类型标识
         graph:
           $ref: '#/components/schemas/Graph'
@@ -4057,6 +4107,7 @@ components:
       - infographic_image
       - gap_discover
       - gap_verify
+      - gap_feasibility
     AiJobCreateRequest:
       type: object
       required:
@@ -4296,6 +4347,9 @@ components:
           - R_SERVICE_UNAVAILABLE
           - PAYLOAD_TOO_LARGE
           - UNSUPPORTED_FILE
+          - PROJECT_NOT_FOUND
+          - PROJECT_NAME_EXISTS
+          - CSRF_REJECTED
           - INTERNAL
         message:
           type: string
@@ -4474,6 +4528,10 @@ components:
           type: integer
         status:
           $ref: '#/components/schemas/RunStatus'
+        prompt:
+          type: string
+          nullable: true
+          description: 本 run 的原始用户指令（取自 messages_snapshot 顶层 user_prompt）
         roundsLog:
           type: array
           items: {}
@@ -5976,6 +6034,37 @@ components:
           $ref: '#/components/schemas/ValueVerdict'
         evidence:
           $ref: '#/components/schemas/EvidencePack'
+    GapFeasibilityRequest:
+      type: object
+      description: ':feasibility 可选请求体；config 当前仅透传给状态机，字段可省略。'
+      properties:
+        config:
+          type: object
+          additionalProperties: true
+    GapFeasibilityAccepted:
+      type: object
+      description: ':feasibility 202 受理体'
+      required:
+      - feasibility_run_id
+      properties:
+        feasibility_run_id:
+          type: string
+    GapFeasibilityVerdictResult:
+      type: object
+      description: GET .../feasibility-verdict 返回体：可行性裁决 + 攒证包。
+      required:
+      - gap_id
+      - verdict
+      - pack
+      properties:
+        gap_id:
+          type: string
+        verdict:
+          $ref: '#/components/schemas/FeasibilityVerdict'
+        pack:
+          oneOf:
+          - $ref: '#/components/schemas/FeasibilityPack'
+          - type: 'null'
     ScratchpadState:
       type: object
       description: 本 run 实时工作记忆快照（类 harness 工作笔记；HITL 轮询视图）

@@ -50,7 +50,7 @@ export function markOnboarded(identity?: OnboardingIdentity | null): void {
 
 /** 五步工作流说明（与 StageBar / ProjectsPage hero 保持一致心智模型） */
 const TOUR_STEPS = [
-  { n: 1, label: "导入", desc: "上传 PDF/ZIP 或检索文献到文献库" },
+  { n: 1, label: "导入", desc: "对话式检索文献建库（也可上传 PDF/ZIP）" },
   { n: 2, label: "筛选", desc: "标记纳入 / 排除，确定综述范围" },
   { n: 3, label: "分析", desc: "文献计量：关键词、合作网络、主题地图" },
   { n: 4, label: "综述", desc: "AI 生成可溯源的综述初稿" },
@@ -117,7 +117,8 @@ export function WelcomeTour({ open, onClose }: WelcomeTourProps) {
         </h2>
         <p id="onboard-desc" className="onboard-desc">
           一个面向中文研究者的文献计量与系统综述（SLR）助手。
-          只需顺着下面五步，即可端到端完成一份可溯源、零伪造、可哈希验证的文献综述。
+          只需顺着下面五步，即可端到端完成一份可溯源、零伪造、可哈希验证的文献综述，
+          并进一步发现值得做的研究空白。
         </p>
 
         <ol className="onboard-steps">

@@ -195,7 +195,8 @@ class RunController:
                     1 for pp, _p in pairs if pp.inclusion_status == "included"
                 )
             return (
-                f"\n\n【当前工作上下文】你正在为**项目 #{project_id}「{proj.name}」**服务，"
+                f"\n\n【当前工作上下文】你正在为**项目 #{project_id}「{proj.name}」**服务"
+                "（项目名仅为标识，可能与研究主题无关；研究主题必须来自语料内容而非项目名），"
                 f"该项目已纳入 {included} 篇文献作为综述语料。\n"
                 "- 用户说\"本项目/当前项目/已纳入文献/现有语料\"一律指这个项目；"
                 f"**不要调用 project.list 去查找或罗列项目**——你就在项目 #{project_id} 中。\n"

@@ -176,8 +176,8 @@ describe("DocumentsPanel 关键词热点", () => {
     // 高被引表：标题/作者/年份/被引列 + 行
     expect(screen.getByText("论文甲")).toBeInTheDocument();
     expect(screen.getByText("张三")).toBeInTheDocument();
-    // null 作者/年份 → —
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    // null 作者/年份 → 未标注
+    expect(screen.getAllByText("未标注").length).toBeGreaterThanOrEqual(2);
 
     // 导出菜单存在（词云卡）
     expect(screen.getByRole("button", { name: /导出/ })).toBeInTheDocument();
@@ -222,6 +222,21 @@ describe("DocumentsPanel 关键词热点", () => {
     });
     render(<DocumentsPanel projectId="1" corpusId={CID} />);
     expect(screen.getByText("当前语料无高被引文献数据")).toBeInTheDocument();
+  });
+
+  it("文献标题/作者与关键词为 null → 显示未标注，不崩", async () => {
+    ensureWordCloudSpy.mockResolvedValue(false);
+    documentsSpy.mockReturnValue({
+      data: {
+        keywords: [{ term: null, freq: null }],
+        topCited: [{ title: null, author: null, year: null, cited: null }],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    render(<DocumentsPanel projectId="1" corpusId={CID} />);
+    await screen.findByText(/词云在当前环境不可用/);
+    expect(screen.getAllByText("未标注").length).toBeGreaterThanOrEqual(3);
   });
 
   it("被引列默认降序排序（initialSort）", () => {

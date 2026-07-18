@@ -11,11 +11,11 @@ import { ChartCard, DataTable } from "./viz";
 import type { DataTableColumn } from "./viz";
 
 // DataTable 要求 T extends Record<string, unknown>；本地行类型加索引签名以满足约束（结构同 schema）
-type SourceRow = { source: string; articles: number; [k: string]: unknown };
+type SourceRow = { source?: string | null; articles?: number | null; [k: string]: unknown };
 // A4: hIndex 行加 g/m/tc 可选列
 type HRow = {
-  source: string;
-  h: number;
+  source?: string | null;
+  h?: number | null;
   g?: number | null;
   m?: number | null;
   tc?: number | null;
@@ -23,9 +23,9 @@ type HRow = {
 };
 // A4: bradford 行加 rank/cumPct 可选列
 type BradfordRow = {
-  source: string;
-  zone: string;
-  freq: number;
+  source?: string | null;
+  zone?: string | null;
+  freq?: number | null;
   rank?: number | null;
   cumPct?: number | null;
   [k: string]: unknown;
@@ -36,20 +36,25 @@ function numDash(v: unknown): string {
   return v == null ? "—" : String(v);
 }
 
+/** R 文本缺失时统一显示兜底，避免空白单元格。 */
+function textFallback(v: unknown): string {
+  return typeof v === "string" && v.trim() ? v : "未标注";
+}
+
 /** 是否核心区（Zone 1 / Core / 核心 等多写法兼容） */
-function isCoreZone(zone: string): boolean {
-  const z = zone.trim().toLowerCase();
+function isCoreZone(zone: unknown): boolean {
+  const z = typeof zone === "string" ? zone.trim().toLowerCase() : "";
   return z === "zone 1" || z === "core" || z.includes("核心") || z === "1";
 }
 
 const topCols: DataTableColumn<SourceRow>[] = [
-  { key: "source", label: "来源", sortable: true },
-  { key: "articles", label: "论文数", align: "right", sortable: true },
+  { key: "source", label: "来源", sortable: true, format: (v) => textFallback(v) },
+  { key: "articles", label: "论文数", align: "right", sortable: true, format: (v) => numDash(v) },
 ];
 
 const hCols: DataTableColumn<HRow>[] = [
-  { key: "source", label: "来源", sortable: true },
-  { key: "h", label: "H 指数", align: "right", sortable: true },
+  { key: "source", label: "来源", sortable: true, format: (v) => textFallback(v) },
+  { key: "h", label: "H 指数", align: "right", sortable: true, format: (v) => numDash(v) },
   // A4 g/m/tc：缺失显示「—」
   { key: "g", label: "g 指数", align: "right", sortable: true, format: (v) => numDash(v) },
   { key: "m", label: "m 指数", align: "right", sortable: true, format: (v) => numDash(v) },
@@ -59,19 +64,19 @@ const hCols: DataTableColumn<HRow>[] = [
 const bradfordCols: DataTableColumn<BradfordRow>[] = [
   // A4 rank：行号
   { key: "rank", label: "排名", align: "right", sortable: true, format: (v) => numDash(v) },
-  { key: "source", label: "来源", sortable: true },
+  { key: "source", label: "来源", sortable: true, format: (v) => textFallback(v) },
   {
     // 核心区分区名加高亮标记
     key: "zone",
     label: "分区",
     format: (v) =>
-      isCoreZone(String(v)) ? (
-        <span className="bradford-core">{String(v)}</span>
+      isCoreZone(v) ? (
+        <span className="bradford-core">{textFallback(v)}</span>
       ) : (
-        String(v)
+        textFallback(v)
       ),
   },
-  { key: "freq", label: "频率", align: "right", sortable: true },
+  { key: "freq", label: "频率", align: "right", sortable: true, format: (v) => numDash(v) },
   // A4 cumPct：累计频次百分比
   { key: "cumPct", label: "累计%", align: "right", sortable: true, format: (v) => (v == null ? "—" : `${v}%`) },
 ];
@@ -92,7 +97,7 @@ export function SourcesPanel({ projectId, corpusId }: { projectId: string; corpu
         <DataTable
           columns={topCols}
           rows={topRows}
-          getRowKey={(row) => row.source}
+          getRowKey={(row, index) => row.source ?? `source-${index}`}
           initialSort={{ key: "articles", dir: "desc" }}
           emptyText="当前语料无期刊/来源字段数据"
         />
@@ -102,7 +107,7 @@ export function SourcesPanel({ projectId, corpusId }: { projectId: string; corpu
         <DataTable
           columns={hCols}
           rows={hRows}
-          getRowKey={(row) => row.source}
+          getRowKey={(row, index) => row.source ?? `h-source-${index}`}
           initialSort={{ key: "h", dir: "desc" }}
           emptyText="当前语料无期刊/来源字段数据"
         />
@@ -119,7 +124,7 @@ export function SourcesPanel({ projectId, corpusId }: { projectId: string; corpu
           columns={bradfordCols}
           rows={bradfordRows}
           initialSort={{ key: "rank", dir: "asc" }}
-          rowClassName={(row) => (isCoreZone(String(row.zone)) ? "row-core" : undefined)}
+          rowClassName={(row) => (isCoreZone(row.zone) ? "row-core" : undefined)}
           emptyText="当前语料无期刊/来源字段数据"
         />
       </ChartCard>

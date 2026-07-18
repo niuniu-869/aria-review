@@ -58,3 +58,21 @@ test_that(".dedup_au does NOT merge distinct authors (codex P1)", {
   expect_equal(length(mk(c("SMITH J","SANDERS J"))), 2L)   # 不同姓
   expect_equal(length(mk(c("JOHN SMITH","JANE SMITH"))), 2L) # 同姓不同名
 })
+
+test_that(".fmt_apa converts ALL-CAPS title to sentence case (F-19)", {
+  r <- list(authors=c("Li, S."), year="2023",
+            title="TONE OF LANGUAGE, FINANCIAL DISCLOSURE, AND MARKET REACTION: EVIDENCE FROM CHINA",
+            journal="J Finance", volume="10", issue="2", pages="100-120", doi="")
+  out <- .fmt_apa(r)
+  expect_match(out, "Tone of language, financial disclosure, and market reaction: Evidence from china.",
+               fixed = TRUE)
+  expect_false(grepl("TONE OF LANGUAGE", out, fixed = TRUE))
+})
+
+test_that(".fmt_apa keeps mixed-case title unchanged (F-19)", {
+  r <- list(authors=c("Li, S."), year="2023",
+            title="Tone of Language, Financial Disclosure, and Market Reaction",
+            journal="", volume="", issue="", pages="", doi="")
+  out <- .fmt_apa(r)
+  expect_match(out, "Tone of Language, Financial Disclosure, and Market Reaction.", fixed = TRUE)
+})

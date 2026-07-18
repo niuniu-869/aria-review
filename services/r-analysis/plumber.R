@@ -39,9 +39,17 @@ source("R/ingest_records.R")
     out$corpusId <- corpus_id
     out
   }, error = function(e) {
+    # 数据质量类失败 (DATA_QUALITY| 前缀, 用户可自救) → 422;
+    # 其余真异常 → 502。502 只留给"服务真坏了", 监控才不误报。
+    msg <- substr(conditionMessage(e), 1, 300)
+    if (startsWith(msg, "DATA_QUALITY|")) {
+      res$status <- 422
+      dq_msg <- sub("^DATA_QUALITY\\|", "", msg)
+      return(list(code = "ANALYSIS_FAILED",
+                  message = if (nzchar(dq_msg)) paste0("分析失败：", dq_msg) else "分析失败"))
+    }
     res$status <- 502
     # 透传具体错误(截断)：空洞的"分析失败"让用户无从自救(生产 QA 实例: 全空 PY)
-    msg <- substr(conditionMessage(e), 1, 300)
     list(code = "ANALYSIS_FAILED",
          message = if (nzchar(msg)) paste0("分析失败：", msg) else "分析失败")
   })

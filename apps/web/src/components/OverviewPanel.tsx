@@ -79,7 +79,13 @@ export function OverviewPanel({
   const { data, isLoading, isError, error } = useOverview(projectId, corpusId, true);
   const chartRef = useRef<EChartHandle>(null);
 
-  const annual = data?.annualProduction ?? [];
+  const annual = useMemo(
+    () => (data?.annualProduction ?? []).filter(
+      (point): point is { year: number; articles: number } =>
+        typeof point.year === "number" && typeof point.articles === "number",
+    ),
+    [data],
+  );
   const option = useMemo(() => buildAnnualOption(annual), [annual]);
 
   // A5: 三字段 Sankey（作者→关键词→来源，信封）
@@ -107,11 +113,14 @@ export function OverviewPanel({
           A4: hIndex / annualGrowthRate 为可选增量，缺失（null/undefined）时隐藏对应卡。 */}
       {s && (
         <div className="stat-grid">
-          <Stat label="文献数" value={s.documents} />
-          <Stat label="期刊数" value={s.sources} />
-          <Stat label="作者数" value={s.authors} />
-          <Stat label="篇均被引" value={s.avgCitationsPerDoc} />
-          <Stat label="年份跨度" value={`${s.timespanFrom}–${s.timespanTo}`} />
+          <Stat label="文献数" value={s.documents ?? "—"} />
+          <Stat label="期刊数" value={s.sources ?? "—"} />
+          <Stat label="作者数" value={s.authors ?? "—"} />
+          <Stat label="篇均被引" value={s.avgCitationsPerDoc ?? "—"} />
+          <Stat
+            label="年份跨度"
+            value={s.timespanFrom != null && s.timespanTo != null ? `${s.timespanFrom}–${s.timespanTo}` : "—"}
+          />
           {s.hIndex != null && <Stat label="H 指数" value={s.hIndex} />}
           {s.annualGrowthRate != null && (
             <Stat label="年均增长率" value={`${s.annualGrowthRate}%`} />

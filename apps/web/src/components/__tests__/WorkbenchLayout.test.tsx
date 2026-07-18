@@ -17,6 +17,8 @@ const { mockUseProjects, mockRefetch } = vi.hoisted(() => ({
 vi.mock("../../api/agentHooks", () => ({
   useProjects: () => mockUseProjects(),
   useCreateProject: () => ({ mutateAsync: vi.fn(), isPending: false }),
+    useRenameProject: () => ({ mutateAsync: vi.fn(), isPending: false }),
+    useDeleteProject: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 vi.mock("../../auth/AuthContext", () => ({

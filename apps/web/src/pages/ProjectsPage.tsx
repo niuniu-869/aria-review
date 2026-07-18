@@ -9,9 +9,10 @@
  */
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useCreateProject, useProjects } from "../api/agentHooks";
+import { useCreateProject, useDeleteProject, useProjects, useRenameProject } from "../api/agentHooks";
 import { useAuth } from "../auth/AuthContext";
 import { ErrMsg, Loading } from "../lib/ui";
+import { track } from "../lib/track";
 import { TrustBadgeStrip } from "../components/TrustBadgeStrip";
 import { WelcomeTour, hasOnboarded, markOnboarded } from "../components/onboarding/WelcomeTour";
 
@@ -57,12 +58,20 @@ export function ProjectsPage() {
   const { user } = useAuth();
   const { data, isLoading, isFetching, error, refetch } = useProjects();
   const createMutation = useCreateProject();
+  const renameMutation = useRenameProject();
+  const deleteMutation = useDeleteProject();
 
   const [name, setName] = useState("");
   const [rq, setRq] = useState("");
   const [desc, setDesc] = useState("");
   const [formErr, setFormErr] = useState<string | null>(null);
   const [tourOpen, setTourOpen] = useState(false);
+  // 改名/删除的内联编辑态（qa-20260717 F-15）：同一时刻只编辑一个项目
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [cardErr, setCardErr] = useState<string | null>(null);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -74,9 +83,44 @@ export function ProjectsPage() {
         researchQuestion: rq.trim() || undefined,
         description: desc.trim() || undefined,
       });
+      track("project_create", undefined, proj.id);
       navigate(`/projects/${proj.id}`);
     } catch (err) {
       setFormErr((err as Error)?.message ?? "创建失败");
+    }
+  }
+
+  function startRename(p: { id: number; name: string }) {
+    setCardErr(null);
+    setDeletingId(null);
+    setRenamingId(p.id);
+    setRenameValue(p.name);
+  }
+
+  async function submitRename(pid: number) {
+    const v = renameValue.trim();
+    if (!v) { setCardErr("项目名称不能为空"); return; }
+    try {
+      await renameMutation.mutateAsync({ pid, name: v });
+      setRenamingId(null);
+    } catch (err) {
+      setCardErr((err as Error)?.message ?? "改名失败");
+    }
+  }
+
+  function startDelete(pid: number) {
+    setCardErr(null);
+    setRenamingId(null);
+    setDeletingId(pid);
+    setDeleteConfirm("");
+  }
+
+  async function submitDelete(pid: number) {
+    try {
+      await deleteMutation.mutateAsync(pid);
+      setDeletingId(null);
+    } catch (err) {
+      setCardErr((err as Error)?.message ?? "删除失败");
     }
   }
 
@@ -180,7 +224,7 @@ export function ProjectsPage() {
                   placeholder="简要描述研究范围"
                 />
               </div>
-              {formErr && <p className="projects-form-err">{formErr}</p>}
+              {formErr && <p className="projects-form-err" role="alert">{formErr}</p>}
               <button
                 type="submit"
                 className="btn btn-primary"
@@ -208,10 +252,87 @@ export function ProjectsPage() {
                   onClick={() => navigate(`/projects/${p.id}`)}
                   onKeyDown={(e) => e.key === "Enter" && navigate(`/projects/${p.id}`)}
                 >
-                  <div className="proj-card-name">{p.name}</div>
-                  <div className="muted proj-card-meta">
-                    创建于 {formatDate(p.createdAt)}
-                  </div>
+                  {renamingId === p.id ? (
+                    <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                      <input
+                        className="input"
+                        value={renameValue}
+                        autoFocus
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && void submitRename(p.id)}
+                        aria-label="新项目名称"
+                      />
+                      <div className="proj-card-actions">
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm"
+                          disabled={renameMutation.isPending}
+                          onClick={() => void submitRename(p.id)}
+                        >
+                          {renameMutation.isPending ? "保存中…" : "保存"}
+                        </button>
+                        <button type="button" className="btn btn-sm" onClick={() => setRenamingId(null)}>
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  ) : deletingId === p.id ? (
+                    <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                      <p className="proj-card-delete-hint">
+                        删除后不可恢复（文献仍保留在全局库）。输入项目名称
+                        <strong>{p.name}</strong> 以确认：
+                      </p>
+                      <input
+                        className="input"
+                        value={deleteConfirm}
+                        autoFocus
+                        onChange={(e) => setDeleteConfirm(e.target.value)}
+                        placeholder={p.name}
+                        aria-label="输入项目名称确认删除"
+                      />
+                      <div className="proj-card-actions">
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          disabled={deleteConfirm !== p.name || deleteMutation.isPending}
+                          onClick={() => void submitDelete(p.id)}
+                        >
+                          {deleteMutation.isPending ? "删除中…" : "确认删除"}
+                        </button>
+                        <button type="button" className="btn btn-sm" onClick={() => setDeletingId(null)}>
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="proj-card-name">{p.name}</div>
+                      <div className="muted proj-card-meta">
+                        创建于 {formatDate(p.createdAt)}
+                      </div>
+                      <div className="proj-card-actions" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() => startRename(p)}
+                          aria-label={`改名项目 ${p.name}`}
+                        >
+                          改名
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-danger-ghost"
+                          onClick={() => startDelete(p.id)}
+                          aria-label={`删除项目 ${p.name}`}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </>
+                  )}
+                  {cardErr && (renamingId === p.id || deletingId === p.id) && (
+                    <p className="projects-form-err" role="alert">{cardErr}</p>
+                  )}
                 </div>
               ))}
             </div>

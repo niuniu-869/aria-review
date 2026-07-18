@@ -24,6 +24,14 @@ logger = logging.getLogger("agent.tools.read_paper")
 _SECTION_MAX_CHARS = 4000
 _SEARCH_LIMIT = 5
 
+# F-12：加载失败原因 → 面向用户的错误消息（区分"不在项目/无全文/全文读取失败"，
+# 替代原先三合一的 merged message，让失败可定位）。
+_REASON_MESSAGES = {
+    "not_in_project": "文献不在本项目中",
+    "no_attachment": "文献尚无可用全文（请先完成 OCR 解析）",
+    "markdown_unreadable": "全文文件读取失败",
+}
+
 
 class ReadPaperTool(BaseTool):
     tool_id = "read_paper"
@@ -70,9 +78,14 @@ class ReadPaperTool(BaseTool):
         except (TypeError, ValueError):
             return self._fail(action, f"paper_id 非整数: {paper_id!r}")
 
-        paper = await self._load_paper(context, paper_id)
+        paper, reason = await self._load_paper(context, paper_id)
         if paper is None:
-            return self._fail(action, f"无法加载 paper {paper_id}（无预载结构 / 无解析全文 / 不在本项目）")
+            # F-12：按失败原因给出具体消息（不再三合一 merged message）；
+            # 未知/兜底情形（无预载且无 DB 通道、DB 异常）保留通用提示。
+            detail = _REASON_MESSAGES.get(reason or "")
+            if detail:
+                return self._fail(action, f"无法加载 paper {paper_id}：{detail}")
+            return self._fail(action, f"无法加载 paper {paper_id}")
 
         full_md = paper.get("full_md") or ""
         content_list = paper.get("content_list") or []
@@ -105,12 +118,16 @@ class ReadPaperTool(BaseTool):
 
     # ------------------------------------------------------------------ 加载
 
-    async def _load_paper(self, context: Any, paper_id: int) -> dict | None:
-        """取论文 {full_md, content_list, page_map}：优先 context 预载，否则 DB 按需加载。"""
+    async def _load_paper(self, context: Any, paper_id: int) -> tuple[dict | None, str | None]:
+        """取论文 ({full_md, content_list, page_map}, 失败原因)：优先 context 预载，否则 DB 按需加载。
+
+        失败原因（F-12）：not_in_project / no_attachment / markdown_unreadable；
+        None 表示无法归类（无预载且无 DB 通道、DB 异常等兜底）。
+        """
         if isinstance(context, dict):
             preloaded = (context.get("papers") or {}).get(paper_id)
             if preloaded:
-                return preloaded
+                return preloaded, None
             sf = context.get("session_factory")
             project_id = context.get("project_id")
             if sf is not None and project_id is not None:
@@ -118,12 +135,17 @@ class ReadPaperTool(BaseTool):
                     return await self._load_from_db(sf, int(project_id), paper_id)
                 except Exception as e:  # noqa: BLE001 — 加载失败按 None（fail-loud 在调用处）
                     logger.warning("[read_paper] DB 加载失败 paper=%s: %s", paper_id, e)
-                    return None
-        return None
+                    return None, None
+        return None, None
 
     @staticmethod
-    async def _load_from_db(session_factory: Any, project_id: int, paper_id: int) -> dict | None:
-        """从 DocumentStructure + markdown 文件加载（复用 main.py 路径安全护栏）。"""
+    async def _load_from_db(session_factory: Any, project_id: int, paper_id: int) -> tuple[dict | None, str | None]:
+        """从 DocumentStructure + markdown 文件加载（复用 main.py 路径安全护栏）。
+
+        返回 (paper, None) 或 (None, reason)：paper 未关联项目 → not_in_project；
+        有 markdown 附件但路径护栏/读盘失败且无任何可用内容 → markdown_unreadable；
+        其余无结构无全文 → no_attachment。
+        """
         from sqlalchemy import select
 
         from ..models import Attachment, DocumentStructure
@@ -132,7 +154,7 @@ class ReadPaperTool(BaseTool):
         async with session_factory() as s:
             pp = await project_repo.find_project_paper(s, project_id, paper_id)
             if pp is None:
-                return None
+                return None, "not_in_project"
             atts = (
                 await s.execute(
                     select(Attachment).where(Attachment.paper_id == paper_id)
@@ -168,6 +190,7 @@ class ReadPaperTool(BaseTool):
             md_att = next((a for a in atts if a.markdown_path and a.sha256), None)
         # 路径安全护栏（对齐 main.py:1581-1598）：父目录 fulltext 或 sciverse/<paperId>，
         # 文件名恰为 <att.sha256>.md。任一不符即不读（防任意文件读取）。
+        md_failed = False  # 有 markdown 附件但护栏拦截/读盘失败（F-12 markdown_unreadable）
         if md_att and md_att.markdown_path and md_att.sha256:
             try:
                 md_file = Path(md_att.markdown_path).resolve()
@@ -178,9 +201,13 @@ class ReadPaperTool(BaseTool):
                 )
                 if md_file.is_file() and allowed_parent and md_file.name == f"{md_att.sha256}.md":
                     full_md = md_file.read_text(encoding="utf-8")
+                else:
+                    md_failed = True
             except Exception:  # noqa: BLE001 — 读盘失败按无全文
+                logger.warning("[read_paper] markdown 读取失败 paper=%s path=%s", paper_id, md_att.markdown_path)
+                md_failed = True
                 full_md = ""
 
         if not content_list and not full_md:
-            return None
-        return {"full_md": full_md, "content_list": content_list, "page_map": page_map}
+            return None, "markdown_unreadable" if md_failed else "no_attachment"
+        return {"full_md": full_md, "content_list": content_list, "page_map": page_map}, None

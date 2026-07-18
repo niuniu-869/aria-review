@@ -16,6 +16,8 @@ export const REVIEW_TYPES: [string, string][] = [
 ];
 
 interface ReviewPrecheck {
+  /** 结构化拦截原因（供埋点/引导卡区分，避免按 message 文案字符串匹配）。 */
+  reason: "no_included" | "no_fulltext";
   message: string;
   detail: string;
   action: string;
@@ -80,6 +82,7 @@ export function useReviewJob({
     if (!stats) return null;
     if ((stats.includedCount ?? 0) <= 0) {
       return {
+        reason: "no_included",
         message: "先纳入文献",
         detail: "请到文献库完成纳排后再生成综述。",
         action: "去文献库纳排",
@@ -88,6 +91,7 @@ export function useReviewJob({
     }
     if (typeof stats.readableFulltextCount === "number" && stats.readableFulltextCount <= 0) {
       return {
+        reason: "no_fulltext",
         message: "先导入/解析全文",
         detail: "当前纳入文献还没有可读 Markdown 全文。",
         action: "去文献库导入全文",
@@ -166,6 +170,9 @@ export function useReviewJob({
   const generate = useCallback(async () => {
     if (!topic.trim() || running || precheck) return;
     setRunning(true);
+    // 清掉上一轮/恢复的历史 jobId：否则本次 createAiJob 失败时，running true→false 的终态
+    // 埋点会用旧 jobId 误报 review_job_failed，把历史成功任务记成失败（codex P1）。
+    setJobId(null);
     setText("");
     setSummary(null);
     setAnnotated(null);

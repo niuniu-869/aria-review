@@ -1,9 +1,13 @@
+import { useEffect, useRef } from "react";
+import { Link, useInRouterContext } from "react-router-dom";
 import type { LlmRequestOptions } from "../api/client";
 import type { ProjectDetail } from "../api/agentHooks";
 import type { RCorpusId } from "../api/corpusIds";
+import { useProjectFulltextBackfill } from "../hooks/useProjectFulltextBackfill";
 import { REVIEW_TYPES, useReviewJob } from "../hooks/useReviewJob";
 import { ReviewWithProvenance } from "./review/ReviewWithProvenance";
 import { downloadMarkdown } from "../lib/download";
+import { track } from "../lib/track";
 import {
   AiPanel,
   AiToolbar,
@@ -41,9 +45,46 @@ export function ReviewPanel({
     provenanceMap,
     err,
     precheck,
+    jobId,
     exportText,
     generate,
   } = useReviewJob({ projectId, corpusId, llm, apiKey, projectStats });
+  const pid = Number(projectId);
+  const fulltextBackfill = useProjectFulltextBackfill(pid);
+
+  // 引导卡 CTA：应用内（有 Router）走 SPA <Link> 保留内存态/query cache；
+  // 单测无 Router 上下文时回退纯 <a>，既不破坏测试又不整页刷新（codex P1-review P2）。
+  const inRouter = useInRouterContext();
+
+  // ── 0.6.1 P0 漏斗埋点（best-effort，不影响渲染）──────────────────────
+  // 面板曝光：每次挂载记一次。
+  useEffect(() => {
+    track("review_view", undefined, pid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // precheck 拦截：reason 变为新的非空值时记一次（区分缺纳入 / 缺全文）。
+  const lastBlocked = useRef<string | null>(null);
+  useEffect(() => {
+    if (precheck) {
+      if (precheck.reason !== lastBlocked.current) {
+        lastBlocked.current = precheck.reason;
+        track("review_precheck_blocked", { reason: precheck.reason }, pid);
+      }
+    } else {
+      lastBlocked.current = null;
+    }
+  }, [precheck, pid]);
+  // 终态：一次生成的 running 由 true→false 时，按 err 判定成功/失败，每个 job 只记一次。
+  // 挂载时恢复的历史 job（running 恒 false）不触发，避免误记。
+  const prevRunning = useRef(false);
+  const firedTerminalFor = useRef<number | null>(null);
+  useEffect(() => {
+    if (prevRunning.current && !running && jobId && firedTerminalFor.current !== jobId) {
+      firedTerminalFor.current = jobId;
+      track(err ? "review_job_failed" : "review_job_done", { jobId }, pid);
+    }
+    prevRunning.current = running;
+  }, [running, jobId, err, pid]);
 
   function exportMarkdown() {
     if (!exportText) return;
@@ -57,6 +98,27 @@ export function ReviewPanel({
       `# AI综述导出\n\n- 论型：${typeLabel}\n- 主题：${topic || "未填写"}\n\n${clean}\n`,
     );
   }
+
+  async function runFulltextBackfill() {
+    track("review_backfill_click", {}, pid);
+    try {
+      const result = await fulltextBackfill.run();
+      track("review_backfill_done", {
+        succeeded: result.fetched,
+        failed: result.failed.length,
+      }, pid);
+    } catch {
+      // 具体错误由卡内反馈；埋点只记录有聚合结果的正常完成。
+    }
+  }
+
+  const fulltextBackfillError = fulltextBackfill.error instanceof Error
+    ? fulltextBackfill.error.message
+    : fulltextBackfill.error
+      ? String(fulltextBackfill.error)
+      : null;
+  const noFulltextBackfilled = !!fulltextBackfill.result
+    && fulltextBackfill.result.fetched === 0;
 
   return (
     <AiPanel title="AI 综述写作" intro="按论型与主题流式生成综述，并对引用做语料核验。">
@@ -81,7 +143,10 @@ export function ReviewPanel({
         <button
           type="button"
           className="btn btn-primary"
-          onClick={generate}
+          onClick={() => {
+            track("review_generate_click", { type }, pid);
+            void generate();
+          }}
           disabled={!topic.trim() || running || !!precheck}
           title={precheck ? precheck.message : undefined}
         >
@@ -92,11 +157,64 @@ export function ReviewPanel({
         </button>
       </AiToolbar>
 
+      {/* P1: precheck 从一行 muted 小字升级为醒目引导卡——综述一键可达，但缺纳入/全文时
+          要让新手一眼看到"下一步去哪"，并直达文献库补齐（不做任何自动批量副作用）。 */}
       {precheck && (
-        <p className="muted ai-empty" role="status">
-          {precheck.message}：{precheck.detail}{" "}
-          <a href={precheck.href}>{precheck.action}</a>
-        </p>
+        <div className="review-precheck" role="status">
+          <span className="review-precheck-badge" aria-hidden="true">下一步</span>
+          <div className="review-precheck-text">
+            <p className="review-precheck-title">{precheck.message}</p>
+            <p className="review-precheck-detail">{precheck.detail}</p>
+          </div>
+          <div className="review-precheck-actions">
+            {precheck.reason === "no_fulltext" && (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-primary review-precheck-cta"
+                  onClick={() => void runFulltextBackfill()}
+                  disabled={fulltextBackfill.isPending}
+                >
+                  {fulltextBackfill.isPending ? "自动补全文中…" : "自动补全文"}
+                </button>
+                {fulltextBackfill.isPending && (
+                  <span className="review-precheck-progress" aria-live="polite">
+                    {fulltextBackfill.progress
+                      ? `已处理 ${fulltextBackfill.progress.done}/${fulltextBackfill.progress.total}`
+                      : "正在查找可补全文文献…"}
+                  </span>
+                )}
+                {noFulltextBackfilled && !fulltextBackfillError && (
+                  <span className="review-precheck-error" role="alert">
+                    {(fulltextBackfill.result?.failed.length ?? 0) > 0
+                      ? `自动补全文失败 ${fulltextBackfill.result?.failed.length ?? 0} 篇，请手动导入 PDF。`
+                      : "未找到可自动补全文的文献，请手动导入 PDF。"}
+                  </span>
+                )}
+                {fulltextBackfillError && (
+                  <span className="review-precheck-error" role="alert">
+                    自动补全文失败：{fulltextBackfillError}
+                  </span>
+                )}
+              </>
+            )}
+            {inRouter ? (
+              <Link
+                className={`btn review-precheck-cta${precheck.reason === "no_included" ? " btn-primary" : ""}`}
+                to={precheck.href}
+              >
+                {precheck.action}
+              </Link>
+            ) : (
+              <a
+                className={`btn review-precheck-cta${precheck.reason === "no_included" ? " btn-primary" : ""}`}
+                href={precheck.href}
+              >
+                {precheck.action}
+              </a>
+            )}
+          </div>
+        </div>
       )}
 
       <AiKeyNotice hasKey={!!(llm?.apiKey || apiKey)} />

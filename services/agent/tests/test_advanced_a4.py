@@ -166,3 +166,55 @@ def test_overview_increment_optional_when_absent(client):
     s = r.json()["stats"]
     # 默认 FakeR overview 无 hIndex → None / 缺省
     assert s.get("hIndex") is None
+
+
+def test_a4_available_payload_null_items_return_200(client, fake_r):
+    """A4 图表信封中的 R 数据叶子为 null 时也不得触发 500。"""
+    cid = _mk(client)
+
+    async def author_production_with_null(_corpus_id):
+        return 200, {
+            "available": True,
+            "schemaVersion": 1,
+            "corpusId": cid,
+            "data": {
+                "authors": [None],
+                "years": [None],
+                "cells": [{"author": None, "year": None, "articles": None}],
+            },
+        }
+
+    async def keyword_trend_with_null(_corpus_id):
+        return 200, {
+            "available": True,
+            "schemaVersion": 1,
+            "corpusId": cid,
+            "data": {
+                "years": [None],
+                "terms": [None],
+                "cells": [{"year": None, "term": None, "freq": None}],
+            },
+        }
+
+    async def cited_refs_with_null(_corpus_id):
+        return 200, {
+            "available": True,
+            "schemaVersion": 1,
+            "corpusId": cid,
+            "data": [{"ref": None, "count": None}],
+        }
+
+    fake_r.get_author_production = author_production_with_null
+    fake_r.get_keyword_trend = keyword_trend_with_null
+    fake_r.get_cited_refs = cited_refs_with_null
+
+    production = client.get(f"/projects/p/corpus/{cid}/authors/production")
+    trend = client.get(f"/projects/p/corpus/{cid}/documents/keyword-trend")
+    refs = client.get(f"/projects/p/corpus/{cid}/documents/cited-refs")
+
+    assert production.status_code == 200
+    assert production.json()["data"]["cells"][0]["author"] is None
+    assert trend.status_code == 200
+    assert trend.json()["data"]["cells"][0]["term"] is None
+    assert refs.status_code == 200
+    assert refs.json()["data"][0]["ref"] is None

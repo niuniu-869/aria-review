@@ -130,10 +130,15 @@ export interface paths {
         get: operations["getProject"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * 删除项目
+         * @description 删除项目及其子表数据（DB ondelete=CASCADE 级联）；共享 Paper 题录实体不受影响。
+         */
+        delete: operations["deleteProject"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** 重命名项目 */
+        patch: operations["renameProject"];
         trace?: never;
     };
     "/projects/{pid}/corpus/materialize": {
@@ -1180,6 +1185,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{pid}/gaps/runs/{rid}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * gap discover/verify 实时进度 SSE（P1 可观测）
+         * @description text/event-stream：消除长精读/核验阶段黑箱。先订阅频道 → 补发 events_json 历史（Last-Event-ID 断点续传）→ 按 seq 去重转发实时，直到父终态（done/done_empty/error）关流。 事件类型：started / summarizing(done,total) / discovering / subagent_event(child_type) / verifying / done | done_empty | error。
+         */
+        get: operations["gapRunEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{pid}/gaps/{gap_id}:verify": {
         parameters: {
             query?: never;
@@ -1212,6 +1237,46 @@ export interface paths {
          * @description ValueVerdict 由确定性 resolver 出（decided_by 恒为 deterministic）； 附带攒证的 EvidencePack 供透明审阅（反向检索命中对比、阈值、计量结构）。
          */
         get: operations["getGapVerdict"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{pid}/gaps/{gap_id}:feasibility": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 启动该 GAP 的可行性核验（P2，与 novelty 独立）
+         * @description 组件级侦察(数据可得性/方法组件基座/资源规模) → 确定性状态机裁决 buildable/hard/blocked。另建 job，写 feasibility_verdict/feasibility_pack，不碰 value_verdict。
+         */
+        post: operations["feasibilityGap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{pid}/gaps/{gap_id}/feasibility-verdict": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 取可行性裁决 + 攒证包（P2）
+         * @description FeasibilityVerdict 由确定性状态机 resolver 出（decided_by 恒 deterministic）， 与 novelty/value 独立；未核验时 409。
+         */
+        get: operations["getGapFeasibilityVerdict"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1346,6 +1411,9 @@ export interface components {
             researchQuestion?: string | null;
             description?: string | null;
         };
+        ProjectRenameRequest: {
+            name: string;
+        };
         ProjectRef: {
             id: number;
             name: string;
@@ -1448,40 +1516,40 @@ export interface components {
             annualProduction: components["schemas"]["AnnualPoint"][];
         };
         OverviewStats: {
-            documents: number;
+            documents?: number | null;
             /** @description 期刊或来源数 */
-            sources: number;
-            authors: number;
+            sources?: number | null;
+            authors?: number | null;
             keywordsPlus?: number | null;
             authorKeywords?: number | null;
-            avgCitationsPerDoc: number;
+            avgCitationsPerDoc?: number | null;
             /** @description 起始年 */
-            timespanFrom: number;
+            timespanFrom?: number | null;
             /** @description 结束年 */
-            timespanTo: number;
+            timespanTo?: number | null;
             hIndex?: number | null;
             /** @description 年均增长率 CAGR (%); 单年/边界为 null */
             annualGrowthRate?: number | null;
         };
         AnnualPoint: {
-            year: number;
-            articles: number;
+            year?: number | null;
+            articles?: number | null;
         };
         SourceItem: {
-            source: string;
-            articles: number;
+            source?: string | null;
+            articles?: number | null;
         };
         HSourceItem: {
-            source: string;
-            h: number;
+            source?: string | null;
+            h?: number | null;
             g?: number | null;
             m?: number | null;
             tc?: number | null;
         };
         BradfordItem: {
-            source: string;
-            zone: string;
-            freq: number;
+            source?: string | null;
+            zone?: string | null;
+            freq?: number | null;
             rank?: number | null;
             cumPct?: number | null;
         };
@@ -1496,19 +1564,19 @@ export interface components {
             bradford: components["schemas"]["BradfordItem"][];
         };
         AuthorItem: {
-            author: string;
-            articles: number;
+            author?: string | null;
+            articles?: number | null;
         };
         HAuthorItem: {
-            author: string;
-            h: number;
+            author?: string | null;
+            h?: number | null;
             g?: number | null;
             m?: number | null;
             tc?: number | null;
         };
         LotkaPoint: {
-            articles: number;
-            authors: number;
+            articles?: number | null;
+            authors?: number | null;
         };
         Lotka: {
             beta?: number | null;
@@ -1528,11 +1596,11 @@ export interface components {
             title?: string | null;
             author?: string | null;
             year?: number | null;
-            cited: number;
+            cited?: number | null;
         };
         KeywordItem: {
-            term: string;
-            freq: number;
+            term?: string | null;
+            freq?: number | null;
         };
         DocumentsResult: {
             /** @constant */
@@ -1561,13 +1629,13 @@ export interface components {
             projectId?: string | null;
         };
         AuthorProductionCell: {
-            author: string;
-            year: number;
-            articles: number;
+            author?: string | null;
+            year?: number | null;
+            articles?: number | null;
         };
         AuthorProductionData: {
-            authors: string[];
-            years: number[];
+            authors: (string | null)[];
+            years: (number | null)[];
             cells: components["schemas"]["AuthorProductionCell"][];
         };
         AuthorProductionOk: {
@@ -1580,13 +1648,13 @@ export interface components {
         };
         AuthorProductionEnvelope: components["schemas"]["AuthorProductionOk"] | components["schemas"]["AnalysisUnavailable"];
         KeywordTrendCell: {
-            year: number;
-            term: string;
-            freq: number;
+            year?: number | null;
+            term?: string | null;
+            freq?: number | null;
         };
         KeywordTrendData: {
-            years: number[];
-            terms: string[];
+            years: (number | null)[];
+            terms: (string | null)[];
             cells: components["schemas"]["KeywordTrendCell"][];
         };
         KeywordTrendOk: {
@@ -1599,8 +1667,8 @@ export interface components {
         };
         KeywordTrendEnvelope: components["schemas"]["KeywordTrendOk"] | components["schemas"]["AnalysisUnavailable"];
         CitedRefItem: {
-            ref: string;
-            count: number;
+            ref?: string | null;
+            count?: number | null;
         };
         CitedRefsOk: {
             /** @enum {boolean} */
@@ -1612,10 +1680,10 @@ export interface components {
         };
         CitedRefsEnvelope: components["schemas"]["CitedRefsOk"] | components["schemas"]["AnalysisUnavailable"];
         ThematicCluster: {
-            label: string;
-            centrality: number;
-            density: number;
-            freq: number;
+            label?: string | null;
+            centrality?: number | null;
+            density?: number | null;
+            freq?: number | null;
         };
         ThematicData: {
             clusters: components["schemas"]["ThematicCluster"][];
@@ -1630,14 +1698,14 @@ export interface components {
         };
         ThematicEnvelope: components["schemas"]["ThematicOk"] | components["schemas"]["AnalysisUnavailable"];
         EvolutionNode: {
-            name: string;
-            period: string;
-            id: number;
+            name?: string | null;
+            period?: string | null;
+            id?: number | null;
         };
         EvolutionLink: {
-            source: number;
-            target: number;
-            value: number;
+            source?: number | null;
+            target?: number | null;
+            value?: number | null;
         };
         EvolutionData: {
             nodes: components["schemas"]["EvolutionNode"][];
@@ -1653,14 +1721,14 @@ export interface components {
         };
         EvolutionEnvelope: components["schemas"]["EvolutionOk"] | components["schemas"]["AnalysisUnavailable"];
         HistciteNode: {
-            id: string;
+            id?: string | null;
             year?: number | null;
-            label: string;
-            localCites: number;
+            label?: string | null;
+            localCites?: number | null;
         };
         HistciteEdge: {
-            from: string;
-            to: string;
+            from?: string | null;
+            to?: string | null;
         };
         HistciteData: {
             nodes: components["schemas"]["HistciteNode"][];
@@ -1676,13 +1744,13 @@ export interface components {
         };
         HistciteEnvelope: components["schemas"]["HistciteOk"] | components["schemas"]["AnalysisUnavailable"];
         ThreeFieldNode: {
-            name: string;
-            layer: number;
+            name?: string | null;
+            layer?: number | null;
         };
         ThreeFieldLink: {
-            source: string;
-            target: string;
-            value: number;
+            source?: string | null;
+            target?: string | null;
+            value?: number | null;
         };
         ThreeFieldData: {
             nodes: components["schemas"]["ThreeFieldNode"][];
@@ -1698,14 +1766,14 @@ export interface components {
         };
         ThreeFieldEnvelope: components["schemas"]["ThreeFieldOk"] | components["schemas"]["AnalysisUnavailable"];
         GraphNode: {
-            id: string;
-            label: string;
-            value: number;
+            id?: string | null;
+            label?: string | null;
+            value?: number | null;
         };
         GraphEdge: {
-            source: string;
-            target: string;
-            weight: number;
+            source?: string | null;
+            target?: string | null;
+            weight?: number | null;
         };
         Graph: {
             nodes: components["schemas"]["GraphNode"][];
@@ -1718,7 +1786,7 @@ export interface components {
             /** Format: uuid */
             corpusId: string;
             /** @description 网络类型标识 */
-            network: string;
+            network?: string | null;
             graph: components["schemas"]["Graph"];
         };
         SocialResult: {
@@ -1817,7 +1885,7 @@ export interface components {
          * @description 已持久化/可列出的 kind 全集
          * @enum {string}
          */
-        AiJobKind: "review" | "chat" | "summary" | "translate" | "rewrite" | "infographic_prompt" | "infographic_image" | "gap_discover" | "gap_verify";
+        AiJobKind: "review" | "chat" | "summary" | "translate" | "rewrite" | "infographic_prompt" | "infographic_image" | "gap_discover" | "gap_verify" | "gap_feasibility";
         AiJobCreateRequest: {
             kind: components["schemas"]["AiJobCreatableKind"];
             corpusId?: string | null;
@@ -1905,7 +1973,7 @@ export interface components {
         };
         ApiErrorBase: {
             /** @enum {string} */
-            code: "VALIDATION_ERROR" | "CORPUS_NOT_FOUND" | "CORPUS_NOT_READY" | "PARSE_FAILED" | "ANALYSIS_FAILED" | "R_SERVICE_UNAVAILABLE" | "PAYLOAD_TOO_LARGE" | "UNSUPPORTED_FILE" | "INTERNAL";
+            code: "VALIDATION_ERROR" | "CORPUS_NOT_FOUND" | "CORPUS_NOT_READY" | "PARSE_FAILED" | "ANALYSIS_FAILED" | "R_SERVICE_UNAVAILABLE" | "PAYLOAD_TOO_LARGE" | "UNSUPPORTED_FILE" | "PROJECT_NOT_FOUND" | "PROJECT_NAME_EXISTS" | "CSRF_REJECTED" | "INTERNAL";
             /** @description 人类可读, 已脱敏 (Codex-18) */
             message: string;
             details?: {
@@ -1965,6 +2033,11 @@ export interface components {
             prompt: string;
             /** @default false */
             autoConfirm: boolean;
+            /**
+             * @description P0 三入口隔离：search（检索建库）/ review（综述撰写）/ gap（研究空白对话）。 省略或 null → legacy 全工具入口（无收窄，向后兼容旧 workbench）。据此收窄 tool_ids + 选 system persona，并只回放同 entry 的对话历史。（后端对枚举外的 未知字符串也防御性归一为 legacy，但契约层只保证省略/null 的 legacy 语义。）
+             * @enum {string|null}
+             */
+            entry?: "search" | "review" | "gap" | null;
         };
         ConfirmRequest: {
             toolCallId: string;
@@ -1985,6 +2058,8 @@ export interface components {
         RunDetail: {
             runId: number;
             status: components["schemas"]["RunStatus"];
+            /** @description 本 run 的原始用户指令（取自 messages_snapshot 顶层 user_prompt） */
+            prompt?: string | null;
             roundsLog?: unknown[];
             finalOutput?: string | null;
             evidenceRefs?: unknown[] | null;
@@ -2547,6 +2622,52 @@ export interface components {
             status: components["schemas"]["GapStatus"];
             /** @description 价值裁决；未核验时为 null */
             value_verdict: components["schemas"]["ValueVerdict"] | null;
+            /** @description 可行性裁决（P2，与 novelty 解耦）；未核验时为 null */
+            feasibility_verdict?: components["schemas"]["FeasibilityVerdict"] | null;
+            /** @description 可行性攒证包（collect-only，不含裁决）；未核验时为 null */
+            feasibility_pack?: components["schemas"]["FeasibilityPack"] | null;
+        };
+        /** @description 可行性裁决（P2 feasibility-scout）。状态机裁决（非浮点分），decided_by 恒 deterministic；与 value/novelty 独立。 */
+        FeasibilityVerdict: {
+            gap_id: string;
+            /**
+             * @description buildable=可做 / hard=有难度 / blocked=明确不可做
+             * @enum {string}
+             */
+            verdict: "buildable" | "hard" | "blocked";
+            /** @enum {string} */
+            data_status: "available" | "unknown" | "unavailable";
+            /** @enum {string} */
+            method_status: "supported" | "unknown" | "blocked";
+            /** @enum {string} */
+            resource_status: "modest" | "heavy" | "unknown";
+            rationale?: string;
+            /** @enum {string} */
+            decided_by: "deterministic";
+            /** @description 原始状态三元组 + 证据计数，仅供 provenance/debug，非 UI 主判 */
+            signals?: {
+                [key: string]: unknown;
+            };
+        };
+        /** @description 可行性攒证包（submit_feasibility_pack 回传，collect-only；硬剥离裁决字段） */
+        FeasibilityPack: {
+            gap_id: string;
+            data_availability?: {
+                [key: string]: unknown;
+            };
+            method_base?: {
+                [key: string]: unknown;
+            };
+            resource_scale?: {
+                [key: string]: unknown;
+            };
+            negative_evidence?: {
+                [key: string]: unknown;
+            }[];
+            notes?: string[];
+            skipped?: {
+                [key: string]: unknown;
+            }[];
         };
         /** @description 反向检索命中条目（证伪：已有研究是否已填补该空白） */
         ReverseSearchHit: {
@@ -2595,6 +2716,22 @@ export interface components {
             gap_id: string;
             verdict: components["schemas"]["ValueVerdict"];
             evidence: components["schemas"]["EvidencePack"];
+        };
+        /** @description :feasibility 可选请求体；config 当前仅透传给状态机，字段可省略。 */
+        GapFeasibilityRequest: {
+            config?: {
+                [key: string]: unknown;
+            };
+        };
+        /** @description :feasibility 202 受理体 */
+        GapFeasibilityAccepted: {
+            feasibility_run_id: string;
+        };
+        /** @description GET .../feasibility-verdict 返回体：可行性裁决 + 攒证包。 */
+        GapFeasibilityVerdictResult: {
+            gap_id: string;
+            verdict: components["schemas"]["FeasibilityVerdict"];
+            pack: components["schemas"]["FeasibilityPack"] | null;
         };
         /** @description 本 run 实时工作记忆快照（类 harness 工作笔记；HITL 轮询视图） */
         ScratchpadState: {
@@ -2955,6 +3092,90 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrNotFound"];
+                };
+            };
+        };
+    };
+    deleteProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 项目 DB id（整数） */
+                pid: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 删除成功 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 项目不存在（或不属于当前用户） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    renameProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 项目 DB id（整数） */
+                pid: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectRenameRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的项目 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectRef"];
+                };
+            };
+            /** @description 项目不存在（或不属于当前用户） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description 项目名已存在 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description 参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrValidation"];
                 };
             };
         };
@@ -5215,6 +5436,39 @@ export interface operations {
             };
         };
     };
+    gapRunEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: number;
+                /** @description gap 发现/核验 run id（= ai_job.id） */
+                rid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description SSE 事件流（text/event-stream） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description gap run 不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrNotFound"];
+                };
+            };
+        };
+    };
     verifyGap: {
         parameters: {
             query?: never;
@@ -5275,6 +5529,83 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrNotFound"];
+                };
+            };
+        };
+    };
+    feasibilityGap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: number;
+                gap_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["GapFeasibilityRequest"];
+            };
+        };
+        responses: {
+            /** @description 已受理，返回 feasibility_run_id 供轮询 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GapFeasibilityAccepted"];
+                };
+            };
+            /** @description GAP 不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrNotFound"];
+                };
+            };
+        };
+    };
+    getGapFeasibilityVerdict: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: number;
+                gap_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 可行性裁决（含攒证包） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GapFeasibilityVerdictResult"];
+                };
+            };
+            /** @description GAP 不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrNotFound"];
+                };
+            };
+            /** @description 尚未做可行性核验 (GAP_NOT_FEASIBILITY_CHECKED，先 POST :feasibility) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrNotReady"];
                 };
             };
         };

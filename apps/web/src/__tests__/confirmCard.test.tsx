@@ -9,6 +9,8 @@
  */
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { vi, describe, it, expect, beforeEach } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactElement } from "react";
 import type { AgentRunHandlers, AgentToolConfirmRequiredEvent } from "../api/client";
 
 // ---- hoisted mock 函数声明(在 vi.mock 提升前就存在)----
@@ -35,6 +37,14 @@ vi.mock("../lib/markdown", () => ({
 
 import { AgentChat } from "../components/AgentChat";
 import { ConfirmCard } from "../components/ConfirmCard";
+
+// AgentChat 内部使用 useQueryClient（F-21 入口切换失效项目查询），渲染需包 provider
+function renderWithQueryClient(ui: ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
 
 const CONFIRM_EVT: AgentToolConfirmRequiredEvent = {
   type: "tool_confirm_required",
@@ -112,7 +122,7 @@ describe("AgentChat 确认流", () => {
   };
 
   it("收到确认信号后渲染 ConfirmCard", async () => {
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
     turnOffAutoConfirm();
 
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {
@@ -130,7 +140,7 @@ describe("AgentChat 确认流", () => {
   });
 
   it("点批准调用 confirmRun(1,'7',{toolCallId:'c1',decision:'approve'})", async () => {
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
     turnOffAutoConfirm();
 
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {
@@ -152,7 +162,7 @@ describe("AgentChat 确认流", () => {
   });
 
   it("点拒绝调用 confirmRun decision:'reject', 之后确认卡消失", async () => {
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
     turnOffAutoConfirm();
 
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {
@@ -189,7 +199,7 @@ describe("AgentChat 确认流", () => {
       () => new Promise<{ status: string }>((res) => { resolveConfirm = res; }),
     );
 
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
     turnOffAutoConfirm();
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {
       target: { value: "连续两个写操作" },
@@ -220,7 +230,7 @@ describe("AgentChat 确认流", () => {
   it("默认 autoConfirm:true (不动开关时) createRun 传 autoConfirm:true", async () => {
     // 默认不触发确认信号
     mockStreamAgentRun.mockImplementation(async () => {});
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
 
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {
       target: { value: "分析文献" },
@@ -247,7 +257,7 @@ describe("AgentChat 确认流", () => {
   });
 
   it("关闭开关后 createRun 传 autoConfirm:false", async () => {
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
     turnOffAutoConfirm();
 
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {

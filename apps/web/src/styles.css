@@ -327,6 +327,25 @@ ul.clean { list-style: none; padding: 0; margin: 0; }
   font-weight: 700;
   color: var(--ink);
 }
+/* qa-20260717 F-15：项目卡片改名/删除 */
+.proj-card-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+.proj-card-delete-hint {
+  font-size: 0.85rem;
+  color: var(--ink-2);
+  margin: 0 0 0.5rem;
+  line-height: 1.5;
+}
+.btn-sm { padding: 0.28rem 0.7rem; font-size: 0.82rem; }
+.btn-danger {
+  background: var(--cinnabar); border-color: var(--cinnabar); color: var(--on-cinnabar);
+}
+.btn-danger:hover { background: var(--cinnabar-2); border-color: var(--cinnabar-2); }
+.btn-danger-ghost { color: var(--cinnabar); }
+.btn-danger-ghost:hover { background: #f9ece9; border-color: var(--cinnabar); }
 
 /* ---------- 项目工作台布局 ---------- */
 .workbench-container {
@@ -391,6 +410,22 @@ ul.clean { list-style: none; padding: 0; margin: 0; }
 .agent-entry-tab:disabled { cursor: default; opacity: 0.6; }
 .agent-entry-tab-active { background: var(--card); color: var(--cinnabar); box-shadow: var(--shadow-sm); }
 .agent-entry-hint { margin: -0.4rem 0 0; font-size: 0.82rem; }
+
+/* F-07: 历史运行只读区（RunTimeline 之上，默认折叠） */
+.run-history { display: flex; flex-direction: column; gap: 0.4rem; }
+.run-history-title { font-size: 0.78rem; font-weight: 600; color: var(--ink-3); }
+.run-history-item {
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--paper-2); padding: 0.45rem 0.75rem;
+}
+.run-history-item summary {
+  cursor: pointer; font-size: 0.85rem; color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.run-history-output {
+  margin-top: 0.45rem; font-size: 0.85rem; color: var(--ink-2);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 
 /* 输入区 */
 .agent-input-row {
@@ -2215,6 +2250,128 @@ ul.clean { list-style: none; padding: 0; margin: 0; }
   font-size: 0.9rem;
 }
 
+/* P1: 综述 precheck 引导卡（复用 .nextstep 的朱砂强调卡语言，把"缺纳入/缺全文"
+   从一行 muted 小字升级为一眼可见、可一键直达文献库的下一步引导）。 */
+.review-precheck {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--cinnabar);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 0.9rem 1.1rem;
+  margin: 0.2rem 0 0.6rem;
+}
+.review-precheck-badge {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--cinnabar-2);
+  background: var(--cinnabar-soft);
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  white-space: nowrap;
+}
+.review-precheck-text {
+  min-width: 0;
+  flex: 1 1 12rem;
+}
+.review-precheck-title {
+  font-family: var(--serif);
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 0;
+}
+.review-precheck-detail {
+  font-size: 0.85rem;
+  color: var(--ink-2);
+  margin: 0.2rem 0 0;
+  line-height: 1.5;
+}
+.review-precheck-cta {
+  flex-shrink: 0;
+  font-size: 0.88rem;
+  text-decoration: none;
+}
+.review-precheck-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+}
+.review-precheck-progress,
+.review-precheck-error {
+  flex-basis: 100%;
+  font-size: 0.8rem;
+  text-align: right;
+}
+.review-precheck-progress {
+  color: var(--ink-2);
+}
+.review-precheck-error {
+  color: var(--danger);
+}
+/* 覆盖全局 a:hover 下划线，保持按钮态与 .btn 一致（codex P1-review P3）。 */
+.review-precheck-cta:hover {
+  text-decoration: none;
+}
+
+/* /about 原理页薄壳：顶栏（返回 + 标题）+ 全屏 iframe */
+.about-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+}
+.about-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-shrink: 0;
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+.about-title {
+  font-family: var(--serif);
+  font-weight: 700;
+  color: var(--ink);
+}
+.about-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.about-main:focus {
+  outline: none;
+}
+.about-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+}
+/* skip-link：默认藏起，键盘 focus 时可见（可访问性） */
+.about-skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 10;
+}
+.about-skip:focus {
+  left: 0.5rem;
+  top: 0.5rem;
+  background: var(--card);
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
 /* 结果 / 流式区容器 */
 .ai-result-box {
   padding: var(--space-md, 1rem);
@@ -3780,6 +3937,22 @@ ul.clean { list-style: none; padding: 0; margin: 0; }
   background: var(--paper); border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: 0.5rem 0.6rem; }
 .vv-revise-input:focus { outline: none; border-color: var(--cinnabar); box-shadow: 0 0 0 2px var(--cinnabar-soft); }
 
+/* 可行性裁决卡：复用 ValueVerdictCard tokens，只补状态机三态与证据摘要。 */
+.fv-card.fv-buildable { border-left: 3px solid var(--ok); }
+.fv-card.fv-hard { border-left: 3px solid var(--warn); }
+.fv-card.fv-blocked { border-left: 3px solid var(--danger); }
+.vv-verdict-pill.fv-buildable { background: rgba(47, 125, 79, 0.14); color: var(--ok); }
+.vv-verdict-pill.fv-hard { background: rgba(184, 121, 26, 0.16); color: var(--warn); }
+.vv-verdict-pill.fv-blocked { background: var(--cinnabar-soft); color: var(--cinnabar-2); }
+.fv-status { font-size: 0.74rem; color: var(--ink-2); background: var(--paper-2); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 0.18rem 0.45rem; }
+.fv-evidence { display: flex; flex-direction: column; gap: 0.45rem; margin: 0; }
+.fv-evidence-row { display: grid; grid-template-columns: minmax(5rem, auto) 1fr; gap: 0.65rem; align-items: baseline; font-size: 0.8rem; }
+.fv-evidence-row dt { color: var(--ink-3); font-weight: 600; }
+.fv-evidence-row dd { margin: 0; color: var(--ink-2); line-height: 1.5; overflow-wrap: anywhere; }
+.fv-negative { font-size: 0.78rem; color: var(--danger); background: rgba(192, 67, 43, 0.08);
+  border: 1px solid rgba(192, 67, 43, 0.2); border-radius: var(--radius-sm); padding: 0.45rem 0.6rem; }
+
 /* ============================================================
    研究副驾工作台 ResearchView（B5 接线）。两栏：左 GapPanel / 右 实时feed+裁决。
    ============================================================ */
@@ -3796,6 +3969,15 @@ ul.clean { list-style: none; padding: 0; margin: 0; }
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+.agent-readiness {
+  margin-bottom: 0.75rem;
+  padding: 0.8rem;
+  border-top: 1px solid rgba(184, 121, 26, 0.22);
+  border-right: 1px solid rgba(184, 121, 26, 0.22);
+  border-bottom: 1px solid rgba(184, 121, 26, 0.22);
+  border-radius: var(--radius-sm);
+  background: rgba(184, 121, 26, 0.08);
 }
 .research-readiness-title { margin: 0; font-family: var(--serif); font-size: 1rem; color: var(--ink); }
 .research-readiness-msg { margin: 0.25rem 0 0; color: var(--ink-2); font-size: 0.86rem; line-height: 1.55; }
@@ -3828,12 +4010,12 @@ ul.clean { list-style: none; padding: 0; margin: 0; }
 .research-main { min-width: 0; }
 .research-aside { display: flex; flex-direction: column; gap: 1rem; position: sticky; top: 1rem; }
 @media (max-width: 920px) { .research-aside { position: static; } }
-.research-detail { display: flex; flex-direction: column; }
+.research-detail { display: flex; flex-direction: column; gap: 0.75rem; }
 .research-detail-empty { color: var(--ink-3); font-size: 0.84rem; text-align: center; padding: 1.5rem 1rem; }
 .research-verify-prompt { display: flex; flex-direction: column; gap: 0.6rem; align-items: flex-start; }
 .research-verify-text { margin: 0; font-size: 0.86rem; color: var(--ink-2); }
 .research-detail-pending { display: flex; align-items: center; gap: 0.5rem; color: var(--ink-3); font-size: 0.86rem; }
-.research-verify-progress { display: flex; align-items: center; gap: 0.45rem; }
+.research-verify-progress { display: flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; margin: 0; }
 .research-verify-failed { font-size: 0.82rem; color: var(--danger); background: rgba(192, 67, 43, 0.08);
   border: 1px solid rgba(192, 67, 43, 0.22); border-radius: var(--radius-sm); padding: 0.45rem 0.6rem; }
 

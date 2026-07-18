@@ -298,6 +298,7 @@ describe("ImportDialog", () => {
   it("未选文件时「开始导入」按钮禁用", () => {
     render(
       <ImportDialog
+        projectId={1}
         importing={false}
         result={undefined}
         error={null}
@@ -312,6 +313,7 @@ describe("ImportDialog", () => {
   it("导入结果显示正确数字", () => {
     render(
       <ImportDialog
+        projectId={1}
         importing={false}
         result={{ imported: 5, skipped: 2, failed: [], paperIds: [] }}
         error={null}
@@ -327,6 +329,7 @@ describe("ImportDialog", () => {
   it("默认勾选上传后直接纳入", () => {
     render(
       <ImportDialog
+        projectId={1}
         importing={false}
         result={undefined}
         error={null}

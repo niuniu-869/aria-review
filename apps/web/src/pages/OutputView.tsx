@@ -3,7 +3,8 @@
  *
  * 数据流闸门（同 AnalysisView）：
  *   - 无 activeCorpus 或 status≠ready → 显示「需先构建分析语料」提示
- *   - ready → 展示综述报告导出 / 引用导出 / PRISMA / pin 工件汇集
+ *   - ready → 展示综述报告导出 / 引用导出
+ *   - PRISMA / pin 工件汇集仅需 projectId，不受 corpus 闸门限制（F-22），始终渲染
  *
  * 已接线:
  *   1. 综述报告导出 — 复用 ReportPanel（A7: MD / HTML / DOCX + 标题/作者/章节勾选）
@@ -167,47 +168,45 @@ export function OutputView() {
         {/* 数据流闸门：无 ready corpus 时显示引导提示 */}
         {!corpusReady && <NoCorpusGate />}
 
-        {/* ---- ready 时展示所有导出能力 ---- */}
+        {/* ---- ready 时展示报告/引用导出能力 ---- */}
         {corpusReady && (
-          <>
-            {/* 1 & 2. 综述报告导出 + 引用导出（复用 ReportPanel） */}
-            <div className="card" style={{ marginBottom: "1.5rem" }}>
-              {/* A7: ReportPanel 已含真实 MD/HTML/DOCX 导出 + 标题/作者/章节勾选 */}
-              <ReportPanel projectId={projectIdStr} corpusId={rCorpusId} />
+          /* 1 & 2. 综述报告导出 + 引用导出（复用 ReportPanel） */
+          <div className="card" style={{ marginBottom: "1.5rem" }}>
+            {/* A7: ReportPanel 已含真实 MD/HTML/DOCX 导出 + 标题/作者/章节勾选 */}
+            <ReportPanel projectId={projectIdStr} corpusId={rCorpusId} />
 
-              {/* TODO M5-legacy: PDF 导出 — 后端需 /report?format=pdf 端点 (LaTeX/pandoc PDF) */}
-              <div style={{ marginTop: "1rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  disabled
-                  title="即将支持 — 需后端 PDF 端点"
-                  style={{ opacity: 0.5, cursor: "not-allowed" }}
-                >
-                  导出 PDF（即将支持）
-                </button>
-                {/* TODO M5-legacy: DOI 反向校验 — 后端需 POST /corpus/{id}/validate-doi */}
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  disabled
-                  title="即将支持 — DOI 反向校验"
-                  style={{ opacity: 0.5, cursor: "not-allowed" }}
-                >
-                  DOI 校验（即将支持）
-                </button>
-              </div>
+            {/* TODO M5-legacy: PDF 导出 — 后端需 /report?format=pdf 端点 (LaTeX/pandoc PDF) */}
+            <div style={{ marginTop: "1rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled
+                title="即将支持 — 需后端 PDF 端点"
+                style={{ opacity: 0.5, cursor: "not-allowed" }}
+              >
+                导出 PDF（即将支持）
+              </button>
+              {/* TODO M5-legacy: DOI 反向校验 — 后端需 POST /corpus/{id}/validate-doi */}
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled
+                title="即将支持 — DOI 反向校验"
+                style={{ opacity: 0.5, cursor: "not-allowed" }}
+              >
+                DOI 校验（即将支持）
+              </button>
             </div>
-
-            {/* 3. PRISMA 流程图（仅需 projectId） */}
-            <div className="card" style={{ marginBottom: "1.5rem" }}>
-              <PrismaPanel projectId={projectIdStr} />
-            </div>
-
-            {/* 4. 已 Pin 工件汇集（来自 Agent 综述运行） */}
-            {pidNum > 0 && <PinnedArtifacts projectId={pidNum} />}
-          </>
+          </div>
         )}
+
+        {/* 3. PRISMA 流程图（仅需 projectId，不受 corpus 闸门限制，F-22） */}
+        <div className="card" style={{ marginBottom: "1.5rem" }}>
+          <PrismaPanel projectId={projectIdStr} />
+        </div>
+
+        {/* 4. 已 Pin 工件汇集（来自 Agent 综述运行；仅需 projectId，不受 corpus 闸门限制） */}
+        {pidNum > 0 && <PinnedArtifacts projectId={pidNum} />}
       </div>
     </ProjectGate>
   );

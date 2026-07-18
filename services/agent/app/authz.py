@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .auth import COOKIE_NAME, get_current_user, hash_token
+from .auth import COOKIE_NAME, get_current_user, hash_token, _origin_of, _trusted_origins
 from .db import get_session
 from .errors import ApiError
 from .models import Project, User
@@ -55,6 +55,16 @@ async def global_guard(request: Request, s: AsyncSession = Depends(get_session))
     path = request.url.path
     if path in _EXEMPT_EXACT or any(path.startswith(p) for p in _EXEMPT_PREFIXES):
         return
+    # CSRF 第二道防线（F-14）：非安全方法校验 Origin/Referer 属可信来源。
+    # 与 auth.require_csrf 同语义：无 Origin/Referer（curl/脚本/同源浏览器 POST）放行，
+    # 依赖 SameSite=Lax cookie；仅当来源存在且不在白名单才拒。
+    if request.method not in ("GET", "HEAD"):
+        allowed = _trusted_origins()
+        if allowed:
+            origin = request.headers.get("origin")
+            src = origin or _origin_of(request.headers.get("referer") or "")
+            if src is not None and src not in allowed:
+                raise ApiError(403, "CSRF_REJECTED", "请求来源不被信任")
     # 认证
     tok = request.cookies.get(COOKIE_NAME)
     user = await session_repo.resolve_user(s, hash_token(tok)) if tok else None

@@ -35,6 +35,8 @@ import { LoginPage } from "./pages/LoginPage";
 
 // 公开落地页（未登录访问 / 的着陆点，设计见 docs/welcome-page-design.md）
 const WelcomePage = lazy(() => import("./pages/WelcomePage").then((m) => ({ default: m.WelcomePage })));
+// 公开「Agent 工作原理」页（iframe 复用自包含静态页，未登录可访问）
+const AboutPage = lazy(() => import("./pages/AboutPage").then((m) => ({ default: m.AboutPage })));
 
 const ChatWorkbench = lazy(() => import("./pages/ChatWorkbench").then((m) => ({ default: m.ChatWorkbench })));
 const LibraryView = lazy(() => import("./pages/LibraryView").then((m) => ({ default: m.LibraryView })));
@@ -85,6 +87,7 @@ export function AppRoutes() {
     <Routes>
       {/* 公开落地页 + 登录 / 注册（未登录可访问） */}
       <Route path="/welcome" element={routePage(<WelcomePage />)} />
+      <Route path="/about" element={routePage(<AboutPage />)} />
       <Route path="/login" element={routePage(<LoginPage />)} />
 
       {/* 受保护路由组：未登录 → 跳 /login（RequireAuth 生产生效，DEV 放行 e2e） */}

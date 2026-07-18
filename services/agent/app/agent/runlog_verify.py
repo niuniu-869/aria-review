@@ -74,9 +74,22 @@ def verify_runlog(
         errors.append(f"事件 seq 不连续: 期望 {expected}, 实得 {seqs}")
 
     # ---- 3. manifest_counts ----
+    # F-13：tool_invocation_count = 各 rounds_log 条目 tool_calls 之和（实际工具调用数，
+    # 不再是 ToolInvocation 写审计行数），从 runlog 内容自洽复算。
+    # codex 二审 P1：旧版 runlog/v1（本迭代前导出）不含 rounds_log 键，
+    # 其 tool_invocation_count 按 tool_invocations 长度计——缺键时回退旧语义，
+    # 不得把内容正确的旧日志误判为 counts=false。
+    if "rounds_log" in runlog:
+        expected_tool_calls = sum(
+            len(e.get("tool_calls") or [])
+            for e in (runlog.get("rounds_log") or [])
+            if isinstance(e, dict)
+        )
+    else:
+        expected_tool_calls = len(runlog.get("tool_invocations", []) or [])
     counts_ok = (
         manifest.get("event_count") == len(events)
-        and manifest.get("tool_invocation_count") == len(runlog.get("tool_invocations", []) or [])
+        and manifest.get("tool_invocation_count") == expected_tool_calls
         and manifest.get("evidence_count") == len(runlog.get("evidence_refs", []) or [])
     )
     checks["manifest_counts"] = counts_ok
@@ -85,7 +98,7 @@ def verify_runlog(
             "manifest 计数与实际长度不符: "
             f"event_count={manifest.get('event_count')}/actual={len(events)}, "
             f"tool_invocation_count={manifest.get('tool_invocation_count')}/"
-            f"actual={len(runlog.get('tool_invocations', []) or [])}, "
+            f"actual={expected_tool_calls}, "
             f"evidence_count={manifest.get('evidence_count')}/"
             f"actual={len(runlog.get('evidence_refs', []) or [])}"
         )

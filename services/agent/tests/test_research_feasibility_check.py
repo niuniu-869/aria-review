@@ -335,6 +335,37 @@ async def test_feasibility_post_202_creates_job(session_factory, fake_r, monkeyp
         async with client as c:
             r = await c.post(f"/projects/{pid}/gaps/g-202:feasibility")
             assert r.status_code == 202
-            assert r.json()["feasibility_run_id"].isdigit()
+            job_id = r.json()["feasibility_run_id"]
+            assert job_id.isdigit()
+            # 0.6.2 生产 E2E 抓到的回归：AiJobKind Literal 缺 gap_feasibility，
+            # 前端轮询 GET /ai/jobs/{id} 序列化 500。此断言锁死该 kind 可读取。
+            job = await c.get(f"/projects/{pid}/ai/jobs/{job_id}")
+            assert job.status_code == 200
+            assert job.json()["kind"] == "gap_feasibility"
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_feasibility_task_carries_read_paper_whitelist(session_factory, fake_r, monkeypatch):
+    """生产 job 18 回归：task 须显式携带 read_paper 白名单与「检索结果不可 read_paper」禁令。"""
+    from app.review import feasibility_check as fc
+
+    captured = {}
+
+    async def _spy_dispatch(**kwargs):
+        captured["task"] = kwargs.get("task", "")
+        class _R:
+            outcome = "ok"
+            data = [{"gap_id": "g-wl", "data_availability": {"query": "q", "provider": "openalex", "datasets": []},
+                     "method_base": {"query": "q", "building_blocks": []}}]
+            tool_failures = 0
+            tool_failure_reasons = []
+        return _R()
+
+    monkeypatch.setattr(fc, "dispatch_to_skill", _spy_dispatch)
+    gap = {"gap_id": "g-wl", "theme": "t", "statement": "s", "lens": "method",
+           "supporting_papers": [{"paper_id": 128}, {"paper_id": 16}], "counter_evidence": []}
+    await fc.verify_gap_feasibility(gap, registry=None, llm_router=None, base_context={})
+    assert "128" in captured["task"] and "16" in captured["task"]
+    assert "不可** read_paper" in captured["task"]

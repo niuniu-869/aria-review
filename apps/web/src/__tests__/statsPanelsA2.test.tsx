@@ -177,6 +177,20 @@ describe("SourcesPanel", () => {
     expect(screen.getAllByText("当前语料无期刊/来源字段数据")).toHaveLength(3);
   });
 
+  it("来源文本为 null → 显示未标注，不崩", () => {
+    sourcesSpy.mockReturnValue({
+      data: {
+        topSources: [{ source: null, articles: null }],
+        hIndex: [{ source: null, h: null }],
+        bradford: [{ source: null, zone: null, freq: null }],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    render(<SourcesPanel projectId="1" corpusId={CID} />);
+    expect(screen.getAllByText("未标注").length).toBeGreaterThanOrEqual(4);
+  });
+
   it("出错态 → ChartCard 显示错误", () => {
     sourcesSpy.mockReturnValue({
       data: undefined,
@@ -236,6 +250,20 @@ describe("AuthorsPanel", () => {
     });
     render(<AuthorsPanel projectId="1" corpusId={CID} />);
     expect(screen.getByText("暂无 Lotka 分布数据")).toBeInTheDocument();
+  });
+
+  it("作者文本为 null → 显示未标注，不崩", () => {
+    authorsSpy.mockReturnValue({
+      data: {
+        topAuthors: [{ author: null, articles: null }],
+        hIndex: [{ author: null, h: null }],
+        lotka: { beta: null, distribution: [] },
+      },
+      isLoading: false,
+      isError: false,
+    });
+    render(<AuthorsPanel projectId="1" corpusId={CID} />);
+    expect(screen.getAllByText("未标注")).toHaveLength(2);
   });
 
   it("beta<=0 → 空态（不画非法理论曲线）", () => {

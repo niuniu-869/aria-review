@@ -81,7 +81,7 @@ _COUNTER = {"n": 0}
 
 
 async def _mk_ocr_paper(factory, pid: int, *, markdown: str = "# P\n\nbody.",
-                        abstract=None, creators=None) -> int:
+                        abstract=None, creators=None, year=None) -> int:
     """建 Paper + OCR-done Attachment（写真 markdown 文件）+ 关联项目，返回 paper_id。"""
     _COUNTER["n"] += 1
     md_dir = Path(tempfile.mkdtemp())
@@ -93,6 +93,7 @@ async def _mk_ocr_paper(factory, pid: int, *, markdown: str = "# P\n\nbody.",
             title="Extract Tool Paper",
             abstract=abstract,
             creators=creators if creators is not None else [],
+            year=year,
             source="upload",
             item_type="journalArticle",
             dedup_key=f"title:extract-tool-{_COUNTER['n']}",
@@ -257,12 +258,13 @@ async def test_metadata_backfills_missing_fields(session_factory, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_metadata_only_missing_excludes_complete(session_factory, monkeypatch):
-    """only_missing=true：已有 abstract 且 creators 的篇被 SQL 排除 → processed=0。"""
+    """only_missing=true：abstract、creators、year 俱全的篇被 SQL 排除 → processed=0。"""
     pid = await _new_project(session_factory)
     await _mk_ocr_paper(
         session_factory, pid,
         abstract="already has abstract",
         creators=[{"literal": "Existing Author"}],
+        year=2020,  # F-05: year 也纳入 onlyMissing，需显式置齐才算「已全」
     )
 
     _patch_llm(monkeypatch, FakeLLM(_METADATA_JSON))

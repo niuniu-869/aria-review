@@ -9,6 +9,7 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { vi, describe, it, expect, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import type { ReactElement } from "react";
 import type { AgentRunHandlers } from "../api/client";
 
@@ -84,6 +85,17 @@ function renderWithQueryClient(ui: ReactElement) {
   return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
 }
 
+function renderWithRouter(ui: ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 describe("AgentChat + RunTimeline", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -139,7 +151,7 @@ describe("AgentChat + RunTimeline", () => {
   });
 
   it("渲染工具结果摘要 — '找到 42 篇文献'", async () => {
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
 
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {
       target: { value: "分析文献" },
@@ -152,7 +164,7 @@ describe("AgentChat + RunTimeline", () => {
   });
 
   it("渲染最终输出 run_complete 卡片", async () => {
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
 
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {
       target: { value: "分析文献" },
@@ -166,7 +178,7 @@ describe("AgentChat + RunTimeline", () => {
   });
 
   it("最终输出渲染了 markdown 内容", async () => {
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
 
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {
       target: { value: "分析文献" },
@@ -182,7 +194,7 @@ describe("AgentChat + RunTimeline", () => {
   });
 
   it("运行完成后发送按钮重新启用", async () => {
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
 
     const textarea = screen.getByLabelText("Agent 指令输入");
     fireEvent.change(textarea, { target: { value: "分析文献" } });
@@ -196,7 +208,7 @@ describe("AgentChat + RunTimeline", () => {
   });
 
   it("调用了 createRun 和 streamAgentRun 并传入正确参数", async () => {
-    render(<AgentChat projectId={42} />);
+    renderWithQueryClient(<AgentChat projectId={42} />);
 
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {
       target: { value: "测试指令" },
@@ -222,7 +234,7 @@ describe("AgentChat + RunTimeline", () => {
   });
 
   it("P0 三入口：切到「综述撰写」后 createRun 传 entry=review", async () => {
-    render(<AgentChat projectId={42} />);
+    renderWithQueryClient(<AgentChat projectId={42} />);
 
     // 点综述入口 tab（默认是检索建库）
     fireEvent.click(screen.getByRole("tab", { name: /综述撰写/ }));
@@ -241,10 +253,110 @@ describe("AgentChat + RunTimeline", () => {
     });
   });
 
+  it("gap 入口空库时显示引导卡并在发送前拦截", () => {
+    renderWithRouter(
+      <AgentChat
+        projectId={42}
+        readiness={{
+          stage: "no_papers",
+          label: "项目还没有文献",
+          actionText: "去检索或导入文献",
+          actionHref: "/projects/42/library",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /研究空白/ }));
+    fireEvent.change(screen.getByLabelText("Agent 指令输入"), { target: { value: "找研究空白" } });
+    fireEvent.keyDown(screen.getByLabelText("Agent 指令输入"), { key: "Enter", ctrlKey: true });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("项目还没有文献");
+    expect(screen.getByRole("button", { name: /发送/ })).toBeDisabled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
+  });
+
+  it("search 入口空库时不拦截建库请求", async () => {
+    renderWithRouter(
+      <AgentChat
+        projectId={42}
+        readiness={{
+          stage: "no_papers",
+          label: "项目还没有文献",
+          actionText: "去检索或导入文献",
+          actionHref: "/projects/42/library",
+        }}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Agent 指令输入"), { target: { value: "检索联邦学习" } });
+    fireEvent.click(screen.getByRole("button", { name: /发送/ }));
+
+    expect(screen.queryByText("项目还没有文献")).not.toBeInTheDocument();
+    await waitFor(() => expect(mockCreateRun).toHaveBeenCalled());
+  });
+
+  it("review 入口无可读全文时拦截发送", () => {
+    renderWithRouter(
+      <AgentChat
+        projectId={42}
+        readiness={{
+          stage: "no_fulltext",
+          label: "已纳入文献缺少可读全文",
+          actionText: "去补充全文",
+          actionHref: "/projects/42/library",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /综述撰写/ }));
+    fireEvent.change(screen.getByLabelText("Agent 指令输入"), { target: { value: "写综述" } });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("综述依赖已纳入且可读的全文");
+    expect(screen.getByRole("button", { name: /发送/ })).toBeDisabled();
+  });
+
+  it("gap 入口无可读全文时仅软提示，不拦截发送", async () => {
+    renderWithRouter(
+      <AgentChat
+        projectId={42}
+        readiness={{
+          stage: "no_fulltext",
+          label: "已纳入文献缺少可读全文",
+          actionText: "去补充全文",
+          actionHref: "/projects/42/library",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /研究空白/ }));
+    fireEvent.change(screen.getByLabelText("Agent 指令输入"), { target: { value: "讨论研究空白" } });
+    fireEvent.click(screen.getByRole("button", { name: /发送/ }));
+
+    expect(screen.getByRole("status")).toHaveTextContent("仍可继续讨论研究空白");
+    await waitFor(() => expect(mockCreateRun).toHaveBeenCalled());
+  });
+
+  it("统计未加载时 review 入口不显示卡片也不拦截", async () => {
+    renderWithRouter(<AgentChat projectId={42} />);
+
+    fireEvent.click(screen.getByRole("tab", { name: /综述撰写/ }));
+    fireEvent.change(screen.getByLabelText("Agent 指令输入"), { target: { value: "写综述" } });
+    fireEvent.click(screen.getByRole("button", { name: /发送/ }));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(mockCreateRun).toHaveBeenCalled());
+  });
+
   it("Sciverse 检索选项更新后提交使用最新值", async () => {
     mockSciverseSettings.apiToken = "old-token";
     mockSciverseSettings.baseUrl = "https://old.sciverse.test";
-    const { rerender } = render(<AgentChat projectId={42} />);
+    // rerender 会整体替换根节点，须显式携带同一 provider（AgentChat 依赖 useQueryClient）
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const { rerender } = render(
+      <QueryClientProvider client={qc}><AgentChat projectId={42} /></QueryClientProvider>,
+    );
 
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {
       target: { value: "测试指令" },
@@ -252,7 +364,9 @@ describe("AgentChat + RunTimeline", () => {
 
     mockSciverseSettings.apiToken = "new-token";
     mockSciverseSettings.baseUrl = "https://new.sciverse.test";
-    rerender(<AgentChat projectId={42} />);
+    rerender(
+      <QueryClientProvider client={qc}><AgentChat projectId={42} /></QueryClientProvider>,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /发送/ }));
 
@@ -322,7 +436,7 @@ describe("AgentChat + RunTimeline", () => {
       },
     );
 
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
     fireEvent.change(screen.getByLabelText("Agent 指令输入"), {
       target: { value: "分析文献" },
     });
@@ -335,7 +449,7 @@ describe("AgentChat + RunTimeline", () => {
 
   // 修复4: 新 run 时 ErrorBoundary 重置（runCount key 递增）——验证第二次提交时 timeline 仍能渲染
   it("第二次提交时 ErrorBoundary 重置并能正常渲染", async () => {
-    render(<AgentChat projectId={1} />);
+    renderWithQueryClient(<AgentChat projectId={1} />);
 
     const submit = async () => {
       fireEvent.change(screen.getByLabelText("Agent 指令输入"), {

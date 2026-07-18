@@ -384,3 +384,82 @@ async def test_run_review_provenance_real_llm_end_to_end():
     import re as _re
     ids = _re.findall(r"\[\[anchor:([^\]]+)\]\]", result["review_md"])
     assert any(i in pmap for i in ids), "review_md 的 anchor 必须映射到 provenance_map"
+
+
+# ======================================================================
+# F-18 — EvidenceRef 块级锚点回填 + F-13 review_chars 剔除 anchor 标记
+# ======================================================================
+
+from app.review.orchestrate import _strip_anchor_marks  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_run_review_backfills_evidence_anchors_offline():
+    """F-18：run_review 把已定位 key_point 的块级锚点回填到同篇 EvidenceRef。
+
+    此前 from_record 产出的 EvidenceRef 其 page_no/block_idx/bbox/section_title/
+    anchor_id 恒为 None；回填后命中文献的证据应带可审计的原文坐标。
+    """
+    content_list = [
+        {"type": "text",
+         "text": "Intro. Fake source quote for provenance test. End.",
+         "text_level": None, "page_idx": 0, "bbox": [10.0, 20.0, 500.0, 60.0]},
+    ]
+    paper_markdowns = [{
+        "meta": {"paper_id": "10", "title": "T"},
+        "markdown": "some body",
+        "content_list": content_list,
+    }]
+    records = [{"idx": 1, "paper_id": 10, "attachment_id": 55}]
+
+    result = await run_review("topic", paper_markdowns, records)
+
+    assert result["error"] is None
+    refs = result["evidence_refs"]
+    assert refs, "fake 综述含 [1] 引用，应产出 EvidenceRef"
+    anchored = [r for r in refs if r.anchor_id]
+    assert anchored, "至少一条 EvidenceRef 应带 anchor_id（F-18 回填）"
+    ref = anchored[0]
+    assert ref.block_idx is not None
+    assert ref.page_no is not None and ref.page_no >= 1
+    assert ref.bbox == [10.0, 20.0, 500.0, 60.0]
+    assert ref.anchor_id.startswith("a10_")
+
+
+@pytest.mark.asyncio
+async def test_run_review_no_structure_leaves_anchors_none_offline():
+    """无 DocumentStructure（content_list=None）→ EvidenceRef 锚点保持 None（现状不变）。"""
+    paper_markdowns = [{"meta": {"paper_id": "10", "title": "T"}, "markdown": "some body"}]
+    records = [{"idx": 1, "paper_id": 10, "attachment_id": 55}]
+
+    result = await run_review("topic", paper_markdowns, records)
+
+    assert result["error"] is None
+    refs = result["evidence_refs"]
+    assert refs
+    assert all(r.anchor_id is None and r.block_idx is None for r in refs)
+
+
+@pytest.mark.asyncio
+async def test_run_review_review_chars_strip_anchor_marks_offline():
+    """F-13：stats.review_chars 剔除 [[anchor:]] 包裹标记，并同值入 validation_summary。"""
+    content_list = [
+        {"type": "text",
+         "text": "Intro. Fake source quote for provenance test. End.",
+         "text_level": None, "page_idx": 0, "bbox": None},
+    ]
+    paper_markdowns = [{
+        "meta": {"paper_id": "10", "title": "T"},
+        "markdown": "some body",
+        "content_list": content_list,
+    }]
+    records = [{"idx": 1, "paper_id": 10, "attachment_id": 55}]
+
+    result = await run_review("topic", paper_markdowns, records)
+
+    assert result["error"] is None
+    assert "[[anchor:" in result["review_md"], "本 fixture 应注入 anchor 标记"
+    stripped = _strip_anchor_marks(result["review_md"])
+    assert result["stats"]["review_chars"] == len(stripped)
+    assert result["stats"]["review_chars"] < len(result["review_md"])
+    assert result["validation_summary"]["review_chars"] == result["stats"]["review_chars"]
